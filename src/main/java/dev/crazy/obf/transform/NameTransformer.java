@@ -233,8 +233,13 @@ public final class NameTransformer implements Transformer {
         return false;
     }
 
+    /** Field names with framework meaning — never rename (Kotlin object/companion, enum synthetic). */
+    private static final Set<String> RESERVED_FIELDS = Set.of(
+        "serialVersionUID", "INSTANCE", "Companion", "$VALUES",
+        "$assertionsDisabled", "CREATOR");
+
     private boolean fieldRenameable(ClassNode cn, FieldNode f, ObfContext ctx) {
-        if ("serialVersionUID".equals(f.name)) return false;
+        if (RESERVED_FIELDS.contains(f.name)) return false;
         if (ctx.exclusions().isMemberExcluded(cn.name, f.name, f.desc)) return false;
         if ((cn.access & Opcodes.ACC_ENUM) != 0 && (f.access & Opcodes.ACC_ENUM) != 0) return false;
         if (hasAnyAnnotation(f.visibleAnnotations) || hasAnyAnnotation(f.invisibleAnnotations)) return false;
