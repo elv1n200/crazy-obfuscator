@@ -49,7 +49,7 @@ public final class Pipeline {
         if (cfg.antiDebug)        p.add(new AntiDebugTransformer());
         if (cfg.watermark != null) p.add(new WatermarkTransformer());
         if (cfg.stripMetadata)    p.add(new MetadataStripTransformer());
-        if (cfg.hideReferences)   p.add(new ReferenceHidingTransformer());
+        if (cfg.hideReferences)   p.add(new ReferenceHidingTransformer(log));
         return p;
     }
 }
