@@ -1,0 +1,32 @@
+# Build output
+build/
+.gradle/
+out/
+bin/
+
+# Test workspace — contains private third-party jars (COP), mappings,
+# extracted classes and crash analysis. NEVER commit.
+test-input/
+
+# Stray extraction artifacts
+/META-INF/
+*.class
+
+# Jars (keep only the Gradle wrapper jar)
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.iws
+*.ipr
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+hs_err_pid*

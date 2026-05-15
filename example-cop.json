@@ -1,0 +1,22 @@
+{
+  "rootPackages": ["cop"],
+  "renameClasses": true,
+  "renameMethods": true,
+  "renameFields": true,
+  "encryptStrings": true,
+  "obfuscateNumbers": true,
+  "obfuscateFlow": true,
+  "stripMetadata": true,
+  "flattenPackages": true,
+  "flattenedPackage": "a",
+  "nameStyle": "ALPHA",
+  "stringEncryptionChance": 100,
+  "numberObfuscationChance": 70,
+  "flowLevel": 1,
+  "seed": 0,
+  "excludeClasses": [
+    "cop/config/**",
+    "cop/api/**"
+  ],
+  "excludeMembers": []
+}
