@@ -10,6 +10,18 @@ persistence intact.
 > Always keep the mapping file for every release so you can de-obfuscate
 > crash reports.
 
+## Download
+
+Prebuilt Windows app on the [Releases page](../../releases) — `.msi`
+installer or portable `.zip` (bundled runtime, no Java needed). Or build
+it yourself (see [Build](#build)).
+
+## Intended use
+
+Built to protect **your own** code. Running it on a mod you didn't write
+only scrambles someone else's IP and will usually breach that project's
+license — don't redistribute obfuscated builds of other people's mods.
+
 ## Features
 
 | Pass | What it does |
@@ -42,13 +54,17 @@ Renaming Kotlin code naively breaks Kotlin reflection. This tool handles it:
   subclasses, `Gson`/`TypeToken.get` call sites) and excludes their fields
   (transitively over field types + superclasses) so persisted JSON keeps
   loading after field renaming.
+- **`MixinReferenceScanner`** — excludes own-jar classes that `@Mixin` code
+  references (Mixin relocates that code into the target class at load time,
+  so a renamed/repackaged helper would become unreachable → `IllegalAccessError`).
 
 ### Fabric / Mixin awareness
 
 Auto-excludes from renaming: `@Mixin` classes and `*.mixins.json` targets,
 `fabric.mod.json` entry points, manifest `Main-Class`, `META-INF/services`
-providers, and literal `Class.forName` / `getDeclaredField` reflection
-targets. Mixin classes are left byte-for-byte untouched.
+providers, and `Class.forName` / `getDeclaredField` reflection targets —
+resolved through locals/copies by a source-preserving dataflow pass, not
+just literal-arg cases. Mixin classes are left byte-for-byte untouched.
 
 ## Build
 
