@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "dev.crazy"
-version = "0.1.0"
+version = "0.6.0"
 
 repositories {
     mavenCentral()
@@ -85,3 +85,58 @@ tasks.register<Jar>("fatJar") {
 }
 
 tasks.named("build") { dependsOn("fatJar") }
+
+// ---------------------------------------------------------------------------
+// Native packaging via jpackage (bundles a trimmed Java runtime; the end user
+// needs no Java installed). app-image = portable folder + .exe (no extra
+// tooling). msi = Windows installer (requires WiX Toolset on PATH).
+// ---------------------------------------------------------------------------
+
+val jpkgInput = layout.buildDirectory.dir("jpackage-input")
+val jpkgDest  = layout.buildDirectory.dir("dist")
+
+val prepareJpackageInput by tasks.registering(Copy::class) {
+    dependsOn("fatJar")
+    from(layout.buildDirectory.file("libs/crazy-obfuscator-${project.version}-all.jar"))
+    into(jpkgInput)
+    rename { "crazy-obfuscator.jar" }
+}
+
+fun jpackageArgs(type: String, dest: java.io.File): List<String> {
+    val a = mutableListOf(
+        "--type", type,
+        "--name", "CrazyObfuscator",
+        "--app-version", project.version.toString(),
+        "--vendor", "elv1n200",
+        "--description", "Crazy Obfuscator — Java/Kotlin/Fabric .jar obfuscator",
+        "--input", jpkgInput.get().asFile.absolutePath,
+        "--main-jar", "crazy-obfuscator.jar",
+        "--main-class", "dev.crazy.obf.cli.Main",
+        "--dest", dest.absolutePath,
+        "--java-options", "-XX:+UseParallelGC",
+        "--win-console"                       // it's a CLI tool — keep the console
+    )
+    if (type == "msi") {
+        a += listOf("--win-menu", "--win-shortcut", "--win-dir-chooser",
+                    "--win-menu-group", "Crazy Obfuscator")
+    }
+    return a
+}
+
+val jpackageAppImage by tasks.registering(Exec::class) {
+    group = "distribution"
+    description = "Portable standalone .exe folder (no WiX, no Java needed by the user)"
+    dependsOn(prepareJpackageInput)
+    val dest = jpkgDest.get().dir("app-image").asFile
+    doFirst { dest.mkdirs() }
+    commandLine(listOf("jpackage") + jpackageArgs("app-image", dest))
+}
+
+val jpackageMsi by tasks.registering(Exec::class) {
+    group = "distribution"
+    description = "Windows .msi installer (requires WiX Toolset on PATH)"
+    dependsOn(prepareJpackageInput)
+    val dest = jpkgDest.get().asFile
+    doFirst { dest.mkdirs() }
+    commandLine(listOf("jpackage") + jpackageArgs("msi", dest))
+}
