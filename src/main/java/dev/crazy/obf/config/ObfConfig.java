@@ -46,6 +46,12 @@ public final class ObfConfig {
     /** Chance (0-100) that a given number constant gets transformed. */
     public int numberObfuscationChance = 70;
 
+    /** Control-flow flattening (dispatcher loop). Off by default — heaviest pass. */
+    public boolean flattenControlFlow = false;
+
+    /** Chance (0-100) that an eligible method gets flattened. */
+    public int flattenChance = 40;
+
     public NameGenerator.Style nameStyle = NameGenerator.Style.ALPHA;
 
     /** Fixed RNG seed for reproducible builds. 0 = random. */

@@ -16,6 +16,8 @@
   "numberObfuscationChance": 60,
   "obfuscateFlow": true,
   "flowLevel": 1,
+  "flattenControlFlow": false,
+  "flattenChance": 40,
 
   "stripMetadata": true,
   "rewriteKotlinMetadata": true,

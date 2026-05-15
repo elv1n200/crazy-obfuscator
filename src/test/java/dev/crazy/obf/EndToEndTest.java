@@ -138,4 +138,75 @@ public class EndToEndTest {
             assertNotNull(cl.loadClass("crazy.Indy"));
         }
     }
+
+    /**
+     * Control-flow flattening must preserve semantics. sum(n) = n*(n+1)/2 via
+     * a loop with a back-edge + conditional — exactly the structure flattening
+     * rewrites into a dispatcher. If the dispatcher/state wiring is wrong the
+     * verifier rejects it or the result is incorrect.
+     */
+    @Test
+    void controlFlowFlatteningPreservesSemantics(@org.junit.jupiter.api.io.TempDir Path tmp) throws Exception {
+        ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, "crazy_e2e_f/Foo", null, "java/lang/Object", null);
+
+        var ctor = cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+        ctor.visitVarInsn(Opcodes.ALOAD, 0);
+        ctor.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        ctor.visitInsn(Opcodes.RETURN);
+        ctor.visitMaxs(0, 0);
+
+        // static int sum(int n){ int s=0,i=1; while(i<=n){ s+=i; i++; } return s; }
+        var sum = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "sum", "(I)I", null, null);
+        org.objectweb.asm.Label head = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label body = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label end = new org.objectweb.asm.Label();
+        sum.visitInsn(Opcodes.ICONST_0);
+        sum.visitVarInsn(Opcodes.ISTORE, 1);                 // s
+        sum.visitInsn(Opcodes.ICONST_1);
+        sum.visitVarInsn(Opcodes.ISTORE, 2);                 // i
+        sum.visitLabel(head);
+        sum.visitVarInsn(Opcodes.ILOAD, 2);
+        sum.visitVarInsn(Opcodes.ILOAD, 0);
+        sum.visitJumpInsn(Opcodes.IF_ICMPGT, end);
+        sum.visitLabel(body);
+        sum.visitVarInsn(Opcodes.ILOAD, 1);
+        sum.visitVarInsn(Opcodes.ILOAD, 2);
+        sum.visitInsn(Opcodes.IADD);
+        sum.visitVarInsn(Opcodes.ISTORE, 1);
+        sum.visitIincInsn(2, 1);
+        sum.visitJumpInsn(Opcodes.GOTO, head);
+        sum.visitLabel(end);
+        sum.visitVarInsn(Opcodes.ILOAD, 1);
+        sum.visitInsn(Opcodes.IRETURN);
+        sum.visitMaxs(0, 0);
+        cw.visitEnd();
+
+        Path inJar = tmp.resolve("in.jar");
+        try (var os = Files.newOutputStream(inJar); JarOutputStream jos = new JarOutputStream(os, new Manifest())) {
+            jos.putNextEntry(new JarEntry("crazy_e2e_f/Foo.class"));
+            jos.write(cw.toByteArray());
+            jos.closeEntry();
+        }
+
+        Path outJar = tmp.resolve("out.jar");
+        ObfConfig cfg = new ObfConfig();
+        cfg.rootPackages = java.util.List.of("crazy_e2e_f");
+        cfg.flattenPackages = false;
+        cfg.renameClasses = false;
+        cfg.renameMethods = false;
+        cfg.flattenControlFlow = true;
+        cfg.flattenChance = 100;
+        cfg.seed = 7L;
+        CrazyObfuscator.run(inJar, outJar, cfg, new java.io.PrintStream(java.io.OutputStream.nullOutputStream()));
+
+        try (var cl = new java.net.URLClassLoader(new java.net.URL[]{outJar.toUri().toURL()},
+                                                  EndToEndTest.class.getClassLoader())) {
+            Class<?> foo = cl.loadClass("crazy_e2e_f.Foo");
+            var mh = foo.getMethod("sum", int.class);
+            assertEquals(55, (int) (Integer) mh.invoke(null, 10), "sum(10) must still be 55 after flattening");
+            assertEquals(0, (int) (Integer) mh.invoke(null, 0), "sum(0) must be 0");
+            assertEquals(5050, (int) (Integer) mh.invoke(null, 100));
+        }
+    }
 }

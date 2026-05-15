@@ -40,6 +40,8 @@ public final class Main implements Callable<Integer> {
     @Option(names = {"--anti-debug"}, description = "Inject anti-debug check class") boolean antiDebug;
     @Option(names = {"--encrypt-resource"}, description = "Glob of resources to encrypt. Repeatable.", arity = "1..*") String[] encryptResources;
     @Option(names = {"--flow-level"}, description = "Control-flow level: 0|1|2") Integer flowLevel;
+    @Option(names = {"--flatten"}, description = "Enable control-flow flattening (dispatcher loop)") boolean flatten;
+    @Option(names = {"--flatten-chance"}, description = "0-100: chance an eligible method is flattened") Integer flattenChance;
     @Option(names = {"--rewrite-kotlin-metadata"}, description = "Rewrite Kotlin metadata to match renames (required for Kotlin codebases)") boolean rewriteKotlinMetadata;
 
     @Override
@@ -68,6 +70,8 @@ public final class Main implements Callable<Integer> {
             cfg.encryptResources = new java.util.ArrayList<>(java.util.Arrays.asList(encryptResources));
         }
         if (flowLevel != null)   cfg.flowLevel = flowLevel;
+        if (flatten)             cfg.flattenControlFlow = true;
+        if (flattenChance != null) cfg.flattenChance = flattenChance;
         if (rewriteKotlinMetadata) cfg.rewriteKotlinMetadata = true;
 
         CrazyObfuscator.run(input, output, cfg, System.out);
