@@ -113,6 +113,12 @@ public final class ObfuscatorGui {
         root.add(south, BorderLayout.SOUTH);
 
         f.setContentPane(root);
+        // also suggest output when the input path is typed/pasted
+        input.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            public void insertUpdate(javax.swing.event.DocumentEvent e) { suggestOutput(); }
+            public void removeUpdate(javax.swing.event.DocumentEvent e) {}
+            public void changedUpdate(javax.swing.event.DocumentEvent e) {}
+        });
         run.addActionListener(e -> obfuscate());
         f.pack();
         f.setMinimumSize(f.getSize());
@@ -127,10 +133,24 @@ public final class ObfuscatorGui {
         b.addActionListener(e -> {
             JFileChooser fc = new JFileChooser();
             int r = save ? fc.showSaveDialog(p) : fc.showOpenDialog(p);
-            if (r == JFileChooser.APPROVE_OPTION) tf.setText(fc.getSelectedFile().getAbsolutePath());
+            if (r == JFileChooser.APPROVE_OPTION) {
+                tf.setText(fc.getSelectedFile().getAbsolutePath());
+                if (tf == input) suggestOutput();
+            }
         });
         g.gridx = 2; g.weightx = 0; p.add(b, g);
         return y + 1;
+    }
+
+    /** When an input jar is chosen and output is still blank, propose
+     *  "<input>-obf.jar" next to it so users don't have to invent a path. */
+    private void suggestOutput() {
+        String in = input.getText().trim();
+        if (in.isEmpty() || !output.getText().trim().isEmpty()) return;
+        int dot = in.lastIndexOf('.');
+        String base = dot > 0 ? in.substring(0, dot) : in;
+        String ext  = dot > 0 ? in.substring(dot) : ".jar";
+        output.setText(base + "-obf" + ext);
     }
 
     private int textRow(JPanel p, GridBagConstraints g, int y, String label, JTextField tf, String hint) {
