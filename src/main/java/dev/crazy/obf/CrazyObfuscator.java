@@ -3,6 +3,7 @@ package dev.crazy.obf;
 import dev.crazy.obf.analysis.FabricScanner;
 import dev.crazy.obf.analysis.GsonScanner;
 import dev.crazy.obf.analysis.KotlinCallableRefScanner;
+import dev.crazy.obf.analysis.MixinReferenceScanner;
 import dev.crazy.obf.analysis.ReflectionScanner;
 import dev.crazy.obf.config.ExclusionRules;
 import dev.crazy.obf.config.ObfConfig;
@@ -30,6 +31,9 @@ public final class CrazyObfuscator {
         ex.importLists(config.excludeClasses, config.excludeMembers);
         new FabricScanner(contents, ex, log).scan();
         new ReflectionScanner(contents, ex, log).scan();
+        if (config.renameClasses || config.renameMethods || config.renameFields) {
+            new MixinReferenceScanner(contents, ex, log).scan();
+        }
         if (config.renameMethods || config.renameFields) {
             new KotlinCallableRefScanner(contents, ex, log).scan();
         }

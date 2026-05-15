@@ -186,6 +186,10 @@ public final class ObfuscatorGui {
         ObfConfig cfg = new ObfConfig();
         cfg.rootPackages = new ArrayList<>();
         for (String s : roots.getText().split(",")) { s = s.trim(); if (!s.isEmpty()) cfg.rootPackages.add(s); }
+        // Keep the original package structure — flattening everything into one
+        // package breaks Fabric/Mixin package-relative resolution (this is the
+        // setting proven on real mods; the all-into-"a" default is unsafe here).
+        cfg.flattenPackages = false;
         boolean rn = cName.isSelected();
         cfg.renameClasses = rn; cfg.renameMethods = rn; cfg.renameFields = rn;
         cfg.encryptStrings = cStr.isSelected();
