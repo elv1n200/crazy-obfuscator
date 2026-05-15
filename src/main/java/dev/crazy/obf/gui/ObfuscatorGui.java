@@ -62,7 +62,7 @@ public final class ObfuscatorGui {
         // header
         JLabel title = new JLabel("Crazy Obfuscator");
         title.setFont(title.getFont().deriveFont(Font.BOLD, 18f));
-        JLabel sub = new JLabel("Java / Kotlin / Fabric .jar obfuscator");
+        JLabel sub = new JLabel("Java / Kotlin / Fabric .jar obfuscator  —  tip: drag a .jar onto this window");
         sub.setForeground(new Color(0x6B7280));
         JPanel header = new JPanel();
         header.setLayout(new BoxLayout(header, BoxLayout.Y_AXIS));
@@ -120,6 +120,28 @@ public final class ObfuscatorGui {
             public void changedUpdate(javax.swing.event.DocumentEvent e) {}
         });
         run.addActionListener(e -> obfuscate());
+
+        // Drag a .jar anywhere onto the window -> sets input (+ auto output/mapping)
+        new java.awt.dnd.DropTarget(root, java.awt.dnd.DnDConstants.ACTION_COPY,
+            new java.awt.dnd.DropTargetAdapter() {
+                @Override public void drop(java.awt.dnd.DropTargetDropEvent ev) {
+                    try {
+                        ev.acceptDrop(java.awt.dnd.DnDConstants.ACTION_COPY);
+                        @SuppressWarnings("unchecked")
+                        var files = (java.util.List<java.io.File>) ev.getTransferable()
+                            .getTransferData(java.awt.datatransfer.DataFlavor.javaFileListFlavor);
+                        for (java.io.File file : files) {
+                            if (file.getName().toLowerCase().endsWith(".jar")) {
+                                input.setText(file.getAbsolutePath());
+                                suggestOutput();
+                                break;
+                            }
+                        }
+                        ev.dropComplete(true);
+                    } catch (Exception ex) { ev.dropComplete(false); }
+                }
+            }, true);
+
         f.pack();
         f.setMinimumSize(f.getSize());
         f.setLocationRelativeTo(null);

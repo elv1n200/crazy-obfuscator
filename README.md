@@ -136,6 +136,21 @@ $env:PATH = "$PWD\tools\wix3;$env:PATH"
 
 The portable zip needs none of this and is the recommended distributable.
 
+### Code signing (optional)
+
+An unsigned `.msi`/`.exe` triggers a Windows SmartScreen warning. To sign
+you need a **CA-issued Authenticode code-signing certificate** (a paid
+cert from a CA — self-signed gives no trust benefit) and `signtool.exe`
+(Windows SDK):
+
+```powershell
+.\gradlew signMsi -Pcert=path\to\cert.pfx -PcertPass=secret
+```
+
+Without `-Pcert/-PcertPass` the task no-ops (the `.msi` is still built,
+just unsigned). The GUI app also supports **drag-and-drop**: drop a
+`.jar` onto the window to load it.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Dependency licenses: ASM (BSD-3), Gson

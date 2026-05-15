@@ -142,6 +142,35 @@ val jpackageMsi by tasks.registering(Exec::class) {
     commandLine(listOf("jpackage") + jpackageArgs("msi", dest))
 }
 
+// Authenticode-sign the .msi. Real trust needs a CA-issued code-signing
+// certificate (you supply it) and signtool.exe (Windows SDK). Without
+// both this no-ops with guidance — it never fails the build. Usage:
+//   gradlew signMsi -Pcert=path\to\cert.pfx -PcertPass=secret \
+//                    [-Psigntool=path\to\signtool.exe]
+val signMsi by tasks.registering(Exec::class) {
+    group = "distribution"
+    description = "Authenticode-sign the .msi (needs -Pcert/-PcertPass + signtool)"
+    dependsOn(jpackageMsi)
+    isIgnoreExitValue = true
+    doFirst {
+        val cert = (project.findProperty("cert") ?: System.getenv("CRAZY_CERT")) as String?
+        val pass = (project.findProperty("certPass") ?: System.getenv("CRAZY_CERT_PASS")) as String?
+        val st   = (project.findProperty("signtool") ?: "signtool") as String
+        val msi  = jpkgDest.get().file("CrazyObfuscator-${project.version}.msi").asFile
+        if (cert == null || pass == null) {
+            logger.lifecycle("signMsi: no -Pcert/-PcertPass (or CRAZY_CERT/_PASS) — " +
+                "skipping. The .msi is built but unsigned; SmartScreen will warn users. " +
+                "Supply a CA-issued code-signing .pfx to sign.")
+            commandLine("cmd", "/c", "echo skipped")
+        } else {
+            commandLine(st, "sign", "/fd", "SHA256",
+                "/f", cert, "/p", pass,
+                "/tr", "http://timestamp.digicert.com", "/td", "SHA256",
+                msi.absolutePath)
+        }
+    }
+}
+
 // One-file distributable: zip the portable GUI app (no installer / WiX
 // needed). User unzips and runs CrazyObfuscator.exe — opens the window.
 val packageZip by tasks.registering(Zip::class) {
