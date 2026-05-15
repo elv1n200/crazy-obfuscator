@@ -37,7 +37,7 @@ public final class ObfuscatorGui {
     private final JTextField input   = new JTextField(34);
     private final JTextField output  = new JTextField(34);
     private final JTextField roots   = new JTextField("", 34);
-    private final JTextField mapping = new JTextField("mapping.txt", 34);
+    private final JTextField mapping = new JTextField("", 34);
 
     private final JCheckBox cName   = cb("Rename classes / methods / fields", true);
     private final JCheckBox cStr    = cb("Encrypt strings", true);
@@ -136,6 +136,7 @@ public final class ObfuscatorGui {
             if (r == JFileChooser.APPROVE_OPTION) {
                 tf.setText(fc.getSelectedFile().getAbsolutePath());
                 if (tf == input) suggestOutput();
+                if (tf == output) suggestMapping();
             }
         });
         g.gridx = 2; g.weightx = 0; p.add(b, g);
@@ -151,6 +152,17 @@ public final class ObfuscatorGui {
         String base = dot > 0 ? in.substring(0, dot) : in;
         String ext  = dot > 0 ? in.substring(dot) : ".jar";
         output.setText(base + "-obf" + ext);
+        suggestMapping();
+    }
+
+    /** Put the mapping file next to the output (absolute) if still blank, so
+     *  it never lands in some unknown working dir. */
+    private void suggestMapping() {
+        String out = output.getText().trim();
+        if (out.isEmpty() || !mapping.getText().trim().isEmpty()) return;
+        int dot = out.lastIndexOf('.');
+        String base = dot > 0 ? out.substring(0, dot) : out;
+        mapping.setText(base + "-mapping.txt");
     }
 
     private int textRow(JPanel p, GridBagConstraints g, int y, String label, JTextField tf, String hint) {
