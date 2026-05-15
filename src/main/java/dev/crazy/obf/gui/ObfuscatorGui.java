@@ -43,7 +43,7 @@ public final class ObfuscatorGui {
     private final JCheckBox cStr    = cb("Encrypt strings", true);
     private final JCheckBox cNum    = cb("Obfuscate numbers", true);
     private final JCheckBox cFlow   = cb("Control-flow guards", true);
-    private final JCheckBox cFlat   = cb("Flatten control flow", false);
+    private final JCheckBox cFlat   = cb("Flatten control flow (experimental — may break some mods)", false);
     private final JCheckBox cKt     = cb("Rewrite Kotlin metadata (Kotlin / Fabric mods)", true);
     private final JCheckBox cIndy   = cb("Hide references (invokedynamic)", false);
     private final JCheckBox cJunk   = cb("Inject junk + watermark", true);

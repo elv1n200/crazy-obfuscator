@@ -18,6 +18,7 @@ persistence intact.
 | **String encryption** | Per-class polymorphic decoder; nonlinear keyed LCG + xorshift keystream (not recoverable from known plaintext). Random per-class constants and decoder name. |
 | **Number obfuscation** | Replaces int/long constants with arithmetic identities. |
 | **Control-flow** | Opaque-predicate guards (`flowLevel` 1); level 2 adds polymorphic guards + scattered GOTO chains. |
+| **Flatten** (experimental) | Opt-in dispatcher-loop flattening. Sound subset only: skips try/catch, monitors, switches, and methods with written *reference* locals (Kotlin capture cells / `$default` synthetics make those verifier-unsafe). Off by default — **test the obfuscated jar before shipping**. Full reference-local coverage needs a typed-SSA pass and is a deliberate non-goal. |
 | **Junk code** | Injects unreachable synthetic methods (collision-safe `CRAZY$j` names). |
 | **Metadata stripping** | Removes `SourceFile`, line numbers, local-variable tables, parameter names. |
 | **Watermarking** | Embeds a build tag + `META-INF/crazy-build.txt` for leak tracing. |
