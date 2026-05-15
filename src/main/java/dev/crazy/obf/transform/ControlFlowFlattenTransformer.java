@@ -171,27 +171,22 @@ public final class ControlFlowFlattenTransformer implements Transformer {
                 if (ii.var < maxL) written[ii.var] = true;
             }
         }
-        // source dataflow (producer-preserving) — used to prove a written
-        // reference slot only ever holds a single concrete type, so null-init
-        // is sound (verifier merges null ⊔ T = T).
-        Frame<SourceValue>[] sframes;
-        try {
-            sframes = new Analyzer<>(new SrcPreserve()).analyze(owner, m);
-        } catch (Throwable t) { return false; }
-
-        // eligibility + collect prologue inits
-        List<int[]> prologueInit = new ArrayList<>(); // {slot, category}  (cat 5 = reference -> null-init)
+        // eligibility + collect prologue inits.
+        // SOUNDNESS: pre-initialising a written non-param PRIMITIVE local is
+        // verifier-safe (fixed category at the dispatcher merge). Reference
+        // locals are NOT: slot reuse / Kotlin synthetics (Ref$ObjectRef
+        // capture cells, $default methods) make the dispatcher merge collapse
+        // to java/lang/Object, which the real JVM verifier rejects at reads
+        // requiring the original type. Proving single-type soundly needs a
+        // typed dataflow with the real class hierarchy (a large subsystem);
+        // until then any written reference local makes the method ineligible.
+        List<int[]> prologueInit = new ArrayList<>(); // {slot, primitiveCategory}
         for (int s = 0; s < maxL; s++) {
             int c = cat[s];
             if (c == 0) continue;                    // slot unused
-            if (c == 9) return false;                // mixed primitive/ref category -> unsafe
-            if (c == 5) {
-                if (!written[s] || isParam[s]) continue;     // unwritten/param ref -> already safe
-                if (!singleRefType(insns, sframes, s)) return false;
-                prologueInit.add(new int[]{s, 5});           // null-init
-            } else if (written[s] && !isParam[s]) {
-                prologueInit.add(new int[]{s, c});           // primitive default-init
-            }
+            if (c == 9) return false;                // mixed category -> unsafe
+            if (written[s] && c == 5) return false;  // written reference local -> unsafe
+            if (written[s] && !isParam[s]) prologueInit.add(new int[]{s, c});
         }
 
         // 2. leaders: index 0; any jump target; insn after a branch/return/throw
@@ -261,7 +256,6 @@ public final class ControlFlowFlattenTransformer implements Transformer {
                 case 2 -> { out.add(new InsnNode(Opcodes.LCONST_0)); out.add(new VarInsnNode(Opcodes.LSTORE, slot)); }
                 case 3 -> { out.add(new InsnNode(Opcodes.FCONST_0)); out.add(new VarInsnNode(Opcodes.FSTORE, slot)); }
                 case 4 -> { out.add(new InsnNode(Opcodes.DCONST_0)); out.add(new VarInsnNode(Opcodes.DSTORE, slot)); }
-                case 5 -> { out.add(new InsnNode(Opcodes.ACONST_NULL)); out.add(new VarInsnNode(Opcodes.ASTORE, slot)); }
                 default -> { }
             }
         }
@@ -337,67 +331,6 @@ public final class ControlFlowFlattenTransformer implements Transformer {
     }
 
     // --- helpers ---------------------------------------------------------
-
-    /** SourceInterpreter that keeps the ORIGINAL producer through loads/stores/dup. */
-    private static final class SrcPreserve extends SourceInterpreter {
-        SrcPreserve() { super(Opcodes.ASM9); }
-        @Override public SourceValue copyOperation(AbstractInsnNode i, SourceValue v) { return v; }
-    }
-
-    /**
-     * True iff every value ever stored into reference slot {@code s} is either
-     * the null constant or the SAME concrete object type. Then null-init is
-     * verifier-sound (null ⊔ T = T). Any unknown producer => false (skip the
-     * method — soundness over coverage).
-     */
-    private boolean singleRefType(AbstractInsnNode[] insns, Frame<SourceValue>[] sframes, int s) {
-        String only = null;
-        for (int i = 0; i < insns.length; i++) {
-            if (!(insns[i] instanceof VarInsnNode vi)
-                || vi.getOpcode() != Opcodes.ASTORE || vi.var != s) continue;
-            Frame<SourceValue> f = sframes[i];
-            if (f == null) continue;                       // unreachable store
-            if (f.getStackSize() == 0) return false;
-            SourceValue sv = f.getStack(f.getStackSize() - 1);
-            if (sv == null || sv.insns == null || sv.insns.isEmpty()) return false;
-            for (AbstractInsnNode p : sv.insns) {
-                String t = classifyRef(p);
-                if (t == null) return false;               // unknown -> unsafe
-                if (t.isEmpty()) continue;                  // null const -> compatible
-                if (only == null) only = t;
-                else if (!only.equals(t)) return false;     // conflicting types
-            }
-        }
-        return true;
-    }
-
-    /** "" = null constant; non-empty = concrete object type; null = unknown. */
-    private static String classifyRef(AbstractInsnNode p) {
-        if (p instanceof InsnNode in && in.getOpcode() == Opcodes.ACONST_NULL) return "";
-        if (p instanceof TypeInsnNode ti) {
-            int op = ti.getOpcode();
-            if (op == Opcodes.NEW || op == Opcodes.CHECKCAST) return ti.desc;
-            return null;                                    // ANEWARRAY etc. -> skip
-        }
-        if (p instanceof FieldInsnNode fi) {
-            Type t = Type.getType(fi.desc);
-            return t.getSort() == Type.OBJECT ? t.getInternalName() : null;
-        }
-        if (p instanceof MethodInsnNode mi) {
-            Type rt = Type.getReturnType(mi.desc);
-            return rt.getSort() == Type.OBJECT ? rt.getInternalName() : null;
-        }
-        if (p instanceof InvokeDynamicInsnNode id) {
-            Type rt = Type.getReturnType(id.desc);
-            return rt.getSort() == Type.OBJECT ? rt.getInternalName() : null;
-        }
-        if (p instanceof LdcInsnNode ld) {
-            if (ld.cst instanceof String) return "java/lang/String";
-            if (ld.cst instanceof Type)   return "java/lang/Class";
-            return null;
-        }
-        return null;                                        // ALOAD-copy / other -> skip
-    }
 
     private static boolean isReturnOrThrow(int op) {
         return (op >= Opcodes.IRETURN && op <= Opcodes.RETURN) || op == Opcodes.ATHROW;

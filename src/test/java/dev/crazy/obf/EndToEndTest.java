@@ -267,7 +267,8 @@ public class EndToEndTest {
             assertEquals(5050, (int) (Integer) sumM.invoke(null, 100), "sum(100)=5050");
 
             var makeM = foo.getMethod("make", boolean.class);
-            assertEquals("x",     makeM.invoke(null, true),  "make(true)=\"x\" (ref local flattened)");
+            // ref-local method is (soundly) NOT flattened — must still be left intact + correct
+            assertEquals("x",     makeM.invoke(null, true),  "make(true)=\"x\"");
             assertEquals("false", makeM.invoke(null, false), "make(false)=String.valueOf(false)");
         }
     }
