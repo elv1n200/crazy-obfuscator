@@ -93,6 +93,14 @@ public final class ControlFlowFlattenTransformer implements Transformer {
             if (op == Opcodes.MONITORENTER || op == Opcodes.MONITOREXIT) return false;
             if (op == Opcodes.JSR || op == Opcodes.RET) return false;
             if (op == Opcodes.TABLESWITCH || op == Opcodes.LOOKUPSWITCH) return false;
+            // SOUNDNESS GATE: flattening adds a dispatcher->block edge, so the
+            // verifier merges every block's entry frame with the dispatcher,
+            // where any local written by another block is `top`. Reading such
+            // a local => VerifyError ("Bad local variable type"). If the method
+            // never writes a local, all locals stay = entry params (fixed type,
+            // always assigned) at every block entry, so flattening is provably
+            // verifier-safe. (ISTORE..ASTORE = 54..58, IINC = 132.)
+            if ((op >= Opcodes.ISTORE && op <= Opcodes.ASTORE) || op == Opcodes.IINC) return false;
             if (p.getType() != AbstractInsnNode.LABEL
                 && p.getType() != AbstractInsnNode.LINE
                 && p.getType() != AbstractInsnNode.FRAME) real++;

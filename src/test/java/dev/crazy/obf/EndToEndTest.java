@@ -156,30 +156,32 @@ public class EndToEndTest {
         ctor.visitInsn(Opcodes.RETURN);
         ctor.visitMaxs(0, 0);
 
-        // static int sum(int n){ int s=0,i=1; while(i<=n){ s+=i; i++; } return s; }
-        var sum = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "sum", "(I)I", null, null);
-        org.objectweb.asm.Label head = new org.objectweb.asm.Label();
-        org.objectweb.asm.Label body = new org.objectweb.asm.Label();
-        org.objectweb.asm.Label end = new org.objectweb.asm.Label();
-        sum.visitInsn(Opcodes.ICONST_0);
-        sum.visitVarInsn(Opcodes.ISTORE, 1);                 // s
-        sum.visitInsn(Opcodes.ICONST_1);
-        sum.visitVarInsn(Opcodes.ISTORE, 2);                 // i
-        sum.visitLabel(head);
-        sum.visitVarInsn(Opcodes.ILOAD, 2);
-        sum.visitVarInsn(Opcodes.ILOAD, 0);
-        sum.visitJumpInsn(Opcodes.IF_ICMPGT, end);
-        sum.visitLabel(body);
-        sum.visitVarInsn(Opcodes.ILOAD, 1);
-        sum.visitVarInsn(Opcodes.ILOAD, 2);
-        sum.visitInsn(Opcodes.IADD);
-        sum.visitVarInsn(Opcodes.ISTORE, 1);
-        sum.visitIincInsn(2, 1);
-        sum.visitJumpInsn(Opcodes.GOTO, head);
-        sum.visitLabel(end);
-        sum.visitVarInsn(Opcodes.ILOAD, 1);
-        sum.visitInsn(Opcodes.IRETURN);
-        sum.visitMaxs(0, 0);
+        // No-local-write, multi-block method (the only shape flattening accepts):
+        //   static int pick(int a, int b){
+        //     if (a > 0) return a + b;
+        //     if (b > 0) return a - b;
+        //     return 0;
+        //   }
+        var pick = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "pick", "(II)I", null, null);
+        org.objectweb.asm.Label l1 = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label l2 = new org.objectweb.asm.Label();
+        pick.visitVarInsn(Opcodes.ILOAD, 0);
+        pick.visitJumpInsn(Opcodes.IFLE, l1);                 // a <= 0 -> L1
+        pick.visitVarInsn(Opcodes.ILOAD, 0);
+        pick.visitVarInsn(Opcodes.ILOAD, 1);
+        pick.visitInsn(Opcodes.IADD);
+        pick.visitInsn(Opcodes.IRETURN);
+        pick.visitLabel(l1);
+        pick.visitVarInsn(Opcodes.ILOAD, 1);
+        pick.visitJumpInsn(Opcodes.IFLE, l2);                 // b <= 0 -> L2
+        pick.visitVarInsn(Opcodes.ILOAD, 0);
+        pick.visitVarInsn(Opcodes.ILOAD, 1);
+        pick.visitInsn(Opcodes.ISUB);
+        pick.visitInsn(Opcodes.IRETURN);
+        pick.visitLabel(l2);
+        pick.visitInsn(Opcodes.ICONST_0);
+        pick.visitInsn(Opcodes.IRETURN);
+        pick.visitMaxs(0, 0);
         cw.visitEnd();
 
         Path inJar = tmp.resolve("in.jar");
@@ -203,10 +205,10 @@ public class EndToEndTest {
         try (var cl = new java.net.URLClassLoader(new java.net.URL[]{outJar.toUri().toURL()},
                                                   EndToEndTest.class.getClassLoader())) {
             Class<?> foo = cl.loadClass("crazy_e2e_f.Foo");
-            var mh = foo.getMethod("sum", int.class);
-            assertEquals(55, (int) (Integer) mh.invoke(null, 10), "sum(10) must still be 55 after flattening");
-            assertEquals(0, (int) (Integer) mh.invoke(null, 0), "sum(0) must be 0");
-            assertEquals(5050, (int) (Integer) mh.invoke(null, 100));
+            var mh = foo.getMethod("pick", int.class, int.class);
+            assertEquals(8,  (int) (Integer) mh.invoke(null, 5, 3),  "pick(5,3)=a+b=8");
+            assertEquals(-5, (int) (Integer) mh.invoke(null, -1, 4), "pick(-1,4)=a-b=-5");
+            assertEquals(0,  (int) (Integer) mh.invoke(null, -2, -3), "pick(-2,-3)=0");
         }
     }
 }
