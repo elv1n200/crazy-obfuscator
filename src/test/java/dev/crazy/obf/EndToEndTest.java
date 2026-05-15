@@ -182,6 +182,31 @@ public class EndToEndTest {
         pick.visitInsn(Opcodes.ICONST_0);
         pick.visitInsn(Opcodes.IRETURN);
         pick.visitMaxs(0, 0);
+
+        // WITH local writes + a loop (the generalized path): exercises
+        // prologue pre-init of written int locals.
+        //   static int sum(int n){ int s=0,i=1; while(i<=n){ s+=i; i++; } return s; }
+        var sum = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "sum", "(I)I", null, null);
+        org.objectweb.asm.Label head = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label end = new org.objectweb.asm.Label();
+        sum.visitInsn(Opcodes.ICONST_0);
+        sum.visitVarInsn(Opcodes.ISTORE, 1);   // s
+        sum.visitInsn(Opcodes.ICONST_1);
+        sum.visitVarInsn(Opcodes.ISTORE, 2);   // i
+        sum.visitLabel(head);
+        sum.visitVarInsn(Opcodes.ILOAD, 2);
+        sum.visitVarInsn(Opcodes.ILOAD, 0);
+        sum.visitJumpInsn(Opcodes.IF_ICMPGT, end);
+        sum.visitVarInsn(Opcodes.ILOAD, 1);
+        sum.visitVarInsn(Opcodes.ILOAD, 2);
+        sum.visitInsn(Opcodes.IADD);
+        sum.visitVarInsn(Opcodes.ISTORE, 1);
+        sum.visitIincInsn(2, 1);
+        sum.visitJumpInsn(Opcodes.GOTO, head);
+        sum.visitLabel(end);
+        sum.visitVarInsn(Opcodes.ILOAD, 1);
+        sum.visitInsn(Opcodes.IRETURN);
+        sum.visitMaxs(0, 0);
         cw.visitEnd();
 
         Path inJar = tmp.resolve("in.jar");
@@ -209,6 +234,11 @@ public class EndToEndTest {
             assertEquals(8,  (int) (Integer) mh.invoke(null, 5, 3),  "pick(5,3)=a+b=8");
             assertEquals(-5, (int) (Integer) mh.invoke(null, -1, 4), "pick(-1,4)=a-b=-5");
             assertEquals(0,  (int) (Integer) mh.invoke(null, -2, -3), "pick(-2,-3)=0");
+
+            var sumM = foo.getMethod("sum", int.class);
+            assertEquals(55,   (int) (Integer) sumM.invoke(null, 10),  "sum(10)=55 after flattening w/ locals");
+            assertEquals(0,    (int) (Integer) sumM.invoke(null, 0),   "sum(0)=0");
+            assertEquals(5050, (int) (Integer) sumM.invoke(null, 100), "sum(100)=5050");
         }
     }
 }

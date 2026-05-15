@@ -2,6 +2,7 @@ package dev.crazy.obf.transform;
 
 import dev.crazy.obf.model.ObfContext;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.InsnList;
@@ -93,14 +94,9 @@ public final class ControlFlowFlattenTransformer implements Transformer {
             if (op == Opcodes.MONITORENTER || op == Opcodes.MONITOREXIT) return false;
             if (op == Opcodes.JSR || op == Opcodes.RET) return false;
             if (op == Opcodes.TABLESWITCH || op == Opcodes.LOOKUPSWITCH) return false;
-            // SOUNDNESS GATE: flattening adds a dispatcher->block edge, so the
-            // verifier merges every block's entry frame with the dispatcher,
-            // where any local written by another block is `top`. Reading such
-            // a local => VerifyError ("Bad local variable type"). If the method
-            // never writes a local, all locals stay = entry params (fixed type,
-            // always assigned) at every block entry, so flattening is provably
-            // verifier-safe. (ISTORE..ASTORE = 54..58, IINC = 132.)
-            if ((op >= Opcodes.ISTORE && op <= Opcodes.ASTORE) || op == Opcodes.IINC) return false;
+            // Local writes are allowed now; soundness is enforced in flatten()
+            // by pre-initialising written non-param primitive locals so they
+            // are definitely-assigned at the dispatcher merge (see there).
             if (p.getType() != AbstractInsnNode.LABEL
                 && p.getType() != AbstractInsnNode.LINE
                 && p.getType() != AbstractInsnNode.FRAME) real++;
@@ -111,9 +107,70 @@ public final class ControlFlowFlattenTransformer implements Transformer {
     private boolean flatten(String owner, MethodNode m, Random rng) throws Exception {
         AbstractInsnNode[] insns = m.instructions.toArray();
 
-        // 1. stack heights per instruction (BasicInterpreter computes frames)
+        // 1. stack heights + per-local types per instruction
         Analyzer<BasicValue> az = new Analyzer<>(new BasicInterpreter());
         Frame<BasicValue>[] frames = az.analyze(owner, m);
+
+        // 1b. SOUNDNESS: flattening adds a dispatcher->block edge, so the
+        // verifier merges each block's entry frame with the dispatcher; a
+        // local written by another block would be `top` there -> VerifyError.
+        // Fix: pre-initialise every written non-param local at method entry so
+        // it is definitely-assigned with a fixed type at the merge. Sound only
+        // for PRIMITIVE locals (int/long/float/double): reference slots reused
+        // across disjoint scopes merge to a common supertype which is unsafe
+        // to read as the original type, so any written reference local makes
+        // the method ineligible (skipped, not flattened).
+        int maxL = m.maxLocals;
+        // 0 = unseen, 1 = INT, 2 = LONG, 3 = FLOAT, 4 = DOUBLE, 5 = REF, 9 = MIXED
+        int[] cat = new int[maxL];
+        for (Frame<BasicValue> f : frames) {
+            if (f == null) continue;
+            for (int s = 0; s < f.getLocals() && s < maxL; s++) {
+                BasicValue v = f.getLocal(s);
+                if (v == null) continue;
+                Type vt = v.getType();
+                if (vt == null) continue;            // uninitialised here
+                int c = switch (vt.getSort()) {
+                    case Type.VOID -> 0;
+                    case Type.BOOLEAN, Type.CHAR, Type.BYTE, Type.SHORT, Type.INT -> 1;
+                    case Type.LONG -> 2;
+                    case Type.FLOAT -> 3;
+                    case Type.DOUBLE -> 4;
+                    default -> 5;                    // OBJECT / ARRAY
+                };
+                if (c == 0) continue;
+                cat[s] = (cat[s] == 0) ? c : (cat[s] == c ? c : 9);
+            }
+        }
+        // parameter slots are definitely-assigned at entry (no init needed)
+        boolean[] isParam = new boolean[maxL];
+        {
+            int p = (m.access & Opcodes.ACC_STATIC) != 0 ? 0 : 1;
+            if (p == 1 && maxL > 0) isParam[0] = true;
+            for (Type a : Type.getArgumentTypes(m.desc)) {
+                if (p < maxL) isParam[p] = true;
+                p += a.getSize();
+            }
+        }
+        // which slots get written
+        boolean[] written = new boolean[maxL];
+        for (AbstractInsnNode p : insns) {
+            if (p instanceof VarInsnNode vi) {
+                int op = vi.getOpcode();
+                if (op >= Opcodes.ISTORE && op <= Opcodes.ASTORE && vi.var < maxL) written[vi.var] = true;
+            } else if (p instanceof org.objectweb.asm.tree.IincInsnNode ii) {
+                if (ii.var < maxL) written[ii.var] = true;
+            }
+        }
+        // eligibility + collect prologue inits
+        List<int[]> prologueInit = new ArrayList<>(); // {slot, category}
+        for (int s = 0; s < maxL; s++) {
+            int c = cat[s];
+            if (c == 0) continue;                    // slot unused
+            if (c == 9) return false;                // mixed category -> unsafe
+            if (written[s] && c == 5) return false;  // written reference local -> unsafe
+            if (written[s] && !isParam[s]) prologueInit.add(new int[]{s, c});
+        }
 
         // 2. leaders: index 0; any jump target; insn after a branch/return/throw
         boolean[] leader = new boolean[insns.length];
@@ -173,6 +230,18 @@ public final class ControlFlowFlattenTransformer implements Transformer {
         for (int i = 0; i < nBlocks; i++) caseLabel[i] = new LabelNode();
 
         InsnList out = new InsnList();
+        // pre-initialise written non-param primitive locals so every local is
+        // definitely-assigned with a fixed type at the dispatcher merge
+        for (int[] si : prologueInit) {
+            int slot = si[0], c = si[1];
+            switch (c) {
+                case 1 -> { out.add(new InsnNode(Opcodes.ICONST_0)); out.add(new VarInsnNode(Opcodes.ISTORE, slot)); }
+                case 2 -> { out.add(new InsnNode(Opcodes.LCONST_0)); out.add(new VarInsnNode(Opcodes.LSTORE, slot)); }
+                case 3 -> { out.add(new InsnNode(Opcodes.FCONST_0)); out.add(new VarInsnNode(Opcodes.FSTORE, slot)); }
+                case 4 -> { out.add(new InsnNode(Opcodes.DCONST_0)); out.add(new VarInsnNode(Opcodes.DSTORE, slot)); }
+                default -> { }
+            }
+        }
         // $s = state(entryBlock)
         out.add(intPush(stateOf[blockOf.get(firstReal(insns))]));
         out.add(new VarInsnNode(Opcodes.ISTORE, stateVar));
