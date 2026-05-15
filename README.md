@@ -108,6 +108,34 @@ reflection-heavy mod with zero tuning.
 - Generic signatures are preserved (needed for GSON `TypeToken`); they do
   leak some type info to a determined reader.
 
+## Desktop app / installer
+
+`jpackage` bundles a trimmed Java runtime, so end users need no Java.
+
+```bash
+./gradlew jpackageAppImage   # build/dist/app-image/  — portable, run CrazyObfuscator.exe (GUI)
+./gradlew packageZip         # build/dist/CrazyObfuscator-<ver>-windows.zip — one-file distributable
+./gradlew jpackageMsi        # build/dist/CrazyObfuscator-<ver>.msi — Windows installer
+```
+
+Launched with no arguments the app opens a GUI window; with arguments it
+runs as the CLI (`dev.crazy.obf.Launcher` dispatches).
+
+The `.msi` task needs the **WiX 3** toolset (`candle.exe`/`light.exe`) on
+PATH — this JDK's `jpackage` does not accept WiX 4/5/7. WiX 3 needs the
+.NET 3.5 runtime (already present on most Windows installs). No admin
+required if you use the official binary zip instead of the installer:
+
+```powershell
+# one-time, no admin:
+iwr https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip -OutFile wix3.zip
+Expand-Archive wix3.zip tools\wix3
+$env:PATH = "$PWD\tools\wix3;$env:PATH"
+.\gradlew jpackageMsi
+```
+
+The portable zip needs none of this and is the recommended distributable.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Dependency licenses: ASM (BSD-3), Gson

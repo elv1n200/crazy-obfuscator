@@ -30,3 +30,6 @@ Thumbs.db
 # Logs
 *.log
 hs_err_pid*
+
+# Local build toolchain (WiX 3 binaries, fetched not committed)
+tools/
