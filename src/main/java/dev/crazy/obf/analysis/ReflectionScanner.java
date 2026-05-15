@@ -3,6 +3,7 @@ package dev.crazy.obf.analysis;
 import dev.crazy.obf.config.ExclusionRules;
 import dev.crazy.obf.io.JarContents;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.AnnotationNode;
 import org.objectweb.asm.tree.ClassNode;
@@ -82,7 +83,95 @@ public final class ReflectionScanner {
             }
             // .class literal followed by reflection lookup — resolve owner
             scanClassLiteralReflection(cn);
+            // B5: constant strings that reach a sink through locals / copies
+            scanDataflow(cn, internalNames);
         }
+    }
+
+    /**
+     * Source-preserving interpreter: unlike the stock SourceInterpreter (which
+     * resets a value's source on every load/store/dup), this keeps the
+     * ORIGINAL producer, so a constant tracks through
+     * {@code String x = "a.b.C"; ... Class.forName(x)} and dup/swap.
+     */
+    private static final class PropInterp
+            extends org.objectweb.asm.tree.analysis.SourceInterpreter {
+        PropInterp() { super(org.objectweb.asm.Opcodes.ASM9); }
+        @Override
+        public org.objectweb.asm.tree.analysis.SourceValue copyOperation(
+                AbstractInsnNode insn, org.objectweb.asm.tree.analysis.SourceValue value) {
+            return value; // preserve original source through ?LOAD/?STORE/DUP/SWAP
+        }
+    }
+
+    /**
+     * Flow-sensitive pass: for every reflection sink, resolve the class/member
+     * name argument back to its producing instruction(s). If they are all
+     * constant string LDCs, apply the same exclusion as the literal case —
+     * now also when the literal was stashed in a local first. Sound: it can
+     * only ADD exclusions (never renames more), so false positives are safe.
+     */
+    private void scanDataflow(ClassNode cn, Set<String> internalNames) {
+        if (cn.methods == null) return;
+        for (MethodNode m : cn.methods) {
+            if (m.instructions == null || m.instructions.size() == 0) continue;
+            org.objectweb.asm.tree.analysis.Frame<org.objectweb.asm.tree.analysis.SourceValue>[] frames;
+            try {
+                frames = new org.objectweb.asm.tree.analysis.Analyzer<>(new PropInterp())
+                        .analyze(cn.name, m);
+            } catch (Throwable t) {
+                continue; // unanalyzable — skip, never throw
+            }
+            AbstractInsnNode[] insns = m.instructions.toArray();
+            for (int i = 0; i < insns.length; i++) {
+                if (!(insns[i] instanceof MethodInsnNode min)) continue;
+                String sink = min.owner + "." + min.name;
+                boolean cls = CLASS_SINKS.contains(sink);
+                boolean mem = MEMBER_SINKS.contains(sink);
+                if (!cls && !mem) continue;
+                var fr = frames[i];
+                if (fr == null) continue;
+
+                // locate the first String argument of the sink on the stack
+                Type[] at = Type.getArgumentTypes(min.desc);
+                int strArg = -1;
+                for (int a = 0; a < at.length; a++) {
+                    if ("java/lang/String".equals(at[a].getInternalName())) { strArg = a; break; }
+                }
+                if (strArg < 0) continue;
+                int depthFromTop = 0;
+                for (int a = at.length - 1; a > strArg; a--) depthFromTop += at[a].getSize();
+                int idx = fr.getStackSize() - 1 - depthFromTop;
+                if (idx < 0 || idx >= fr.getStackSize()) continue;
+                var sv = fr.getStack(idx);
+
+                String cst = soleConstant(sv);
+                if (cst == null) continue;
+                if (cls) {
+                    String internal = cst.replace('.', '/');
+                    if (internalNames.contains(internal)) {
+                        ex.addClass(internal);
+                        ex.preserveString(cst);
+                        log.println("[crazy] excluding (dataflow Class.forName): " + internal);
+                    }
+                } else {
+                    ex.addMember("**#" + cst);
+                    ex.preserveString(cst);
+                }
+            }
+        }
+    }
+
+    /** Returns the constant string iff every producer is an LDC of the same String. */
+    private static String soleConstant(org.objectweb.asm.tree.analysis.SourceValue sv) {
+        if (sv == null || sv.insns == null || sv.insns.isEmpty()) return null;
+        String only = null;
+        for (AbstractInsnNode p : sv.insns) {
+            if (!(p instanceof LdcInsnNode ld) || !(ld.cst instanceof String s)) return null;
+            if (only == null) only = s;
+            else if (!only.equals(s)) return null;
+        }
+        return only;
     }
 
     /**
