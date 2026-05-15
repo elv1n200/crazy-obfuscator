@@ -26,6 +26,7 @@ dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("info.picocli:picocli:4.7.6")
     implementation("org.jetbrains.kotlin:kotlin-metadata-jvm:2.3.21")
+    implementation("com.formdev:flatlaf:3.5.4")
     annotationProcessor("info.picocli:picocli-codegen:4.7.6")
 
     testImplementation(platform("org.junit:junit-bom:5.11.3"))
@@ -76,7 +77,7 @@ tasks.register<Jar>("fatJar") {
         exclude("dev/crazy/obf/gradle/**")
     }
     // Pick the runtime jars we actually need for the CLI.
-    val keepNames = listOf("asm", "gson", "picocli", "kotlin-metadata-jvm", "kotlin-stdlib", "annotations")
+    val keepNames = listOf("asm", "gson", "picocli", "kotlin-metadata-jvm", "kotlin-stdlib", "annotations", "flatlaf")
     val keepFiles = configurations.runtimeClasspath.get().filter { f ->
         keepNames.any { f.name.startsWith(it) } && f.name.endsWith("jar")
     }
