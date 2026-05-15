@@ -38,7 +38,7 @@ tasks.test {
 }
 
 application {
-    mainClass.set("dev.crazy.obf.cli.Main")
+    mainClass.set("dev.crazy.obf.Launcher")
 }
 
 gradlePlugin {
@@ -53,7 +53,7 @@ gradlePlugin {
 tasks.jar {
     manifest {
         attributes(
-            "Main-Class" to "dev.crazy.obf.cli.Main",
+            "Main-Class" to "dev.crazy.obf.Launcher",
             "Implementation-Title" to "Crazy Obfuscator",
             "Implementation-Version" to project.version
         )
@@ -68,7 +68,7 @@ tasks.register<Jar>("fatJar") {
     archiveClassifier.set("all")
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     manifest {
-        attributes("Main-Class" to "dev.crazy.obf.cli.Main")
+        attributes("Main-Class" to "dev.crazy.obf.Launcher")
     }
     from(sourceSets.main.get().output) {
         // Exclude the gradle-plugin glue from the CLI fat jar — it depends on Gradle
@@ -111,10 +111,10 @@ fun jpackageArgs(type: String, dest: java.io.File): List<String> {
         "--description", "Crazy Obfuscator — Java/Kotlin/Fabric .jar obfuscator",
         "--input", jpkgInput.get().asFile.absolutePath,
         "--main-jar", "crazy-obfuscator.jar",
-        "--main-class", "dev.crazy.obf.cli.Main",
+        "--main-class", "dev.crazy.obf.Launcher",
         "--dest", dest.absolutePath,
         "--java-options", "-XX:+UseParallelGC",
-        "--win-console"                       // it's a CLI tool — keep the console
+        "--add-modules", "java.base,java.desktop",
     )
     if (type == "msi") {
         a += listOf("--win-menu", "--win-shortcut", "--win-dir-chooser",
@@ -128,15 +128,26 @@ val jpackageAppImage by tasks.registering(Exec::class) {
     description = "Portable standalone .exe folder (no WiX, no Java needed by the user)"
     dependsOn(prepareJpackageInput)
     val dest = jpkgDest.get().dir("app-image").asFile
-    doFirst { dest.mkdirs() }
+    doFirst { delete(dest); dest.mkdirs() }   // jpackage refuses to overwrite
     commandLine(listOf("jpackage") + jpackageArgs("app-image", dest))
 }
 
 val jpackageMsi by tasks.registering(Exec::class) {
     group = "distribution"
-    description = "Windows .msi installer (requires WiX Toolset on PATH)"
+    description = "Windows .msi installer (requires WiX 3 candle/light on PATH)"
     dependsOn(prepareJpackageInput)
     val dest = jpkgDest.get().asFile
     doFirst { dest.mkdirs() }
     commandLine(listOf("jpackage") + jpackageArgs("msi", dest))
+}
+
+// One-file distributable: zip the portable GUI app (no installer / WiX
+// needed). User unzips and runs CrazyObfuscator.exe — opens the window.
+val packageZip by tasks.registering(Zip::class) {
+    group = "distribution"
+    description = "Zip the portable GUI app for distribution"
+    dependsOn(jpackageAppImage)
+    from(jpkgDest.get().dir("app-image"))
+    archiveFileName.set("CrazyObfuscator-${project.version}-windows.zip")
+    destinationDirectory.set(jpkgDest)
 }
