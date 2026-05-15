@@ -40,8 +40,7 @@ public final class Main implements Callable<Integer> {
     @Option(names = {"--anti-debug"}, description = "Inject anti-debug check class") boolean antiDebug;
     @Option(names = {"--encrypt-resource"}, description = "Glob of resources to encrypt. Repeatable.", arity = "1..*") String[] encryptResources;
     @Option(names = {"--flow-level"}, description = "Control-flow level: 0|1|2") Integer flowLevel;
-    @Option(names = {"--strip-kotlin-metadata"}, description = "Strip Kotlin metadata (legacy; breaks Kotlin self-reflection)") boolean stripKotlinMetadata;
-    @Option(names = {"--rewrite-kotlin-metadata"}, description = "Rewrite Kotlin metadata to match renames (correct for Kotlin codebases)") boolean rewriteKotlinMetadata;
+    @Option(names = {"--rewrite-kotlin-metadata"}, description = "Rewrite Kotlin metadata to match renames (required for Kotlin codebases)") boolean rewriteKotlinMetadata;
 
     @Override
     public Integer call() throws Exception {
@@ -69,7 +68,6 @@ public final class Main implements Callable<Integer> {
             cfg.encryptResources = new java.util.ArrayList<>(java.util.Arrays.asList(encryptResources));
         }
         if (flowLevel != null)   cfg.flowLevel = flowLevel;
-        if (stripKotlinMetadata) cfg.stripKotlinMetadata = true;
         if (rewriteKotlinMetadata) cfg.rewriteKotlinMetadata = true;
 
         CrazyObfuscator.run(input, output, cfg, System.out);

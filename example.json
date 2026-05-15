@@ -1,0 +1,35 @@
+{
+  "_comment": "Sample config. Pass with --config. CLI flags override these. For a Kotlin/Fabric mod keep rewriteKotlinMetadata=true and list your root package(s).",
+
+  "rootPackages": ["com.example.mymod"],
+
+  "renameClasses": true,
+  "renameMethods": true,
+  "renameFields": true,
+  "flattenPackages": false,
+  "flattenedPackage": "a",
+  "nameStyle": "ALPHA",
+
+  "encryptStrings": true,
+  "stringEncryptionChance": 100,
+  "obfuscateNumbers": true,
+  "numberObfuscationChance": 60,
+  "obfuscateFlow": true,
+  "flowLevel": 1,
+
+  "stripMetadata": true,
+  "rewriteKotlinMetadata": true,
+
+  "injectJunk": true,
+  "antiDebug": false,
+  "watermark": "build-001",
+  "encryptResources": [],
+
+  "seed": 0,
+  "mappingOutput": "mapping.txt",
+
+  "excludeClasses": [
+    "com/example/mymod/api/**"
+  ],
+  "excludeMembers": []
+}

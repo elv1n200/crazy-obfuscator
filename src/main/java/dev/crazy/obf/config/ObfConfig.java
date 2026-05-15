@@ -75,20 +75,11 @@ public final class ObfConfig {
     public boolean antiDebug = false;
 
     /**
-     * Strip Kotlin metadata annotations (kotlin.Metadata, DebugMetadata,
-     * SourceDebugExtension) from any class touched by a rename. Required for
-     * safe class/method renaming of Kotlin code — Kotlin's reflection embeds
-     * names as strings in those annotations, so leaving them in would point
-     * at the OLD names. Stripping them turns the class into a "Java view" for
-     * reflective code (KClass.simpleName falls back to the JVM name).
-     */
-    public boolean stripKotlinMetadata = false;
-
-    /**
-     * Rewrite (rather than strip) Kotlin @Metadata so the names inside it stay
-     * consistent with renames. This is the correct option for renaming a
-     * Kotlin codebase that uses reflection on itself (KProperty/KClass). If
-     * both this and stripKotlinMetadata are set, rewriting wins.
+     * Rewrite Kotlin {@code @Metadata} so the names inside it stay consistent
+     * with renames (via the official kotlin-metadata-jvm library). Required
+     * when renaming a Kotlin codebase: Kotlin reflection embeds names in that
+     * annotation, so without rewriting, KClass/KProperty/KFunction resolve
+     * against stale names. Leave on for any Kotlin (e.g. Fabric) mod.
      */
     public boolean rewriteKotlinMetadata = false;
 

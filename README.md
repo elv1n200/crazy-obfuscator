@@ -1,166 +1,114 @@
 # Crazy Obfuscator
 
-Java/Fabric `.jar` obfuscator. Built for the **COP** Skyblock mod but works on any
-plain Java jar. Inspired by Zelix KlassMaster — does the same kinds of transforms
-on a smaller scale.
+An ASM-based `.jar` obfuscator for Java **and Kotlin**, with first-class
+support for **Fabric mods**. ZKM-style transform pipeline that has been
+verified end-to-end loading and running in Minecraft on a ~2500-class Kotlin
+Fabric mod — including class + method + field renaming with config
+persistence intact.
 
-## What it does
+> Obfuscation hides implementation detail; it is not a security boundary.
+> Always keep the mapping file for every release so you can de-obfuscate
+> crash reports.
 
-| Pass       | What it does                                                                       |
-|------------|------------------------------------------------------------------------------------|
-| resenc     | XOR-encrypts matching resources, injects `crazy.R.read(path)` helper               |
-| strings    | Per-class polymorphic decoder. 3 shapes × random (mult,add) — defeats pattern match |
-| numbers    | Replaces int/long constants with `(N^k1)^k1 + k2 - k2` expressions                 |
-| flow       | Opaque predicate at every method entry. Level 2: 3 shapes + scattered GOTO chain   |
-| junk       | Adds 2-5 synthetic dead methods per class                                          |
-| names      | Renames classes, methods, fields in your packages to short opaque IDs              |
-| antidebug  | Optional: throws if JDWP/javaagent flags are present at startup                    |
-| watermark  | Embeds `crazy/W` class + `META-INF/crazy-build.txt` with tag, seed, timestamp      |
-| strip      | Removes SourceFile, LineNumberTable, LocalVariableTable, parameters                |
-| (mapping)  | Writes Proguard-format mapping file for stack-trace deobfuscation                  |
+## Features
 
-Fabric-aware: scans `fabric.mod.json`, every `*.mixins.json`, every `@Mixin`
-class, the manifest `Main-Class`, every `META-INF/services/*`, and every
-`Class.forName(...) / getDeclaredField(...) / getDeclaredMethod(...)` literal —
-and automatically excludes anything those resolve to.
+| Pass | What it does |
+|------|--------------|
+| **Name obfuscation** | Renames classes, methods and fields. Nested classes keep their `Outer$Inner` structure so generic signatures stay valid. Inheritance-aware method grouping. |
+| **String encryption** | Per-class polymorphic decoder; nonlinear keyed LCG + xorshift keystream (not recoverable from known plaintext). Random per-class constants and decoder name. |
+| **Number obfuscation** | Replaces int/long constants with arithmetic identities. |
+| **Control-flow** | Opaque-predicate guards (`flowLevel` 1); level 2 adds polymorphic guards + scattered GOTO chains. |
+| **Junk code** | Injects unreachable synthetic methods (collision-safe `CRAZY$j` names). |
+| **Metadata stripping** | Removes `SourceFile`, line numbers, local-variable tables, parameter names. |
+| **Watermarking** | Embeds a build tag + `META-INF/crazy-build.txt` for leak tracing. |
+| **Resource encryption** | XOR-encrypts selected jar resources with an injected runtime helper. |
+| **Anti-debug** (opt-in) | Injects a JDWP/agent-detection check. |
+| **Mapping export** | Proguard-format mapping for crash-report de-obfuscation. |
+
+### Kotlin support
+
+Renaming Kotlin code naively breaks Kotlin reflection. This tool handles it:
+
+- **`@Metadata` rewriting** — parses Kotlin metadata with JetBrains' official
+  `kotlin-metadata-jvm` library and remaps every class reference, JVM
+  signature descriptor, nested-class and companion name so metadata stays
+  consistent with the renamed bytecode.
+- **Callable-reference signature patching** — rewrites the hardcoded
+  `X::prop` / `X::fun` signature strings the compiler bakes into bytecode.
+- **`KotlinCallableRefScanner`** — treats callable-reference targets as
+  reflection targets and excludes just those members from renaming.
+- **`GsonScanner`** — finds GSON-serialized model classes (TypeToken
+  subclasses, `Gson`/`TypeToken.get` call sites) and excludes their fields
+  (transitively over field types + superclasses) so persisted JSON keeps
+  loading after field renaming.
+
+### Fabric / Mixin awareness
+
+Auto-excludes from renaming: `@Mixin` classes and `*.mixins.json` targets,
+`fabric.mod.json` entry points, manifest `Main-Class`, `META-INF/services`
+providers, and literal `Class.forName` / `getDeclaredField` reflection
+targets. Mixin classes are left byte-for-byte untouched.
 
 ## Build
 
-```powershell
-cd "C:\Users\elvin\Downloads\Crazy Java tool"
-.\gradlew.bat fatJar
-# -> build\libs\crazy-obfuscator-0.1.0-all.jar   (CLI)
-# -> build\libs\crazy-obfuscator-0.1.0-plain.jar (Gradle plugin)
+Requires JDK 21.
+
+```bash
+./gradlew fatJar      # -> build/libs/crazy-obfuscator-<ver>-all.jar  (runnable CLI)
+./gradlew test        # unit tests + an end-to-end obfuscate/verify/run check
 ```
 
 ## CLI usage
 
-```powershell
-java -jar build\libs\crazy-obfuscator-0.1.0-all.jar `
-     input.jar output.jar `
-     --root-package com.your.mod `
-     --seed 12345
+```bash
+java -jar crazy-obfuscator-all.jar input.jar output.jar \
+     --config example.json \
+     --root-package com.example.mymod \
+     --mapping mapping.txt
 ```
 
-Common flags:
+Flags mirror the config (`--no-strings`, `--flow-level 2`,
+`--rewrite-kotlin-metadata`, `--watermark`, `--seed`, `--encrypt-resource`,
+…). See `example.json` for every option; CLI flags override the file.
 
-| Flag                          | Meaning                                          |
-|-------------------------------|--------------------------------------------------|
-| `-p, --root-package <pkg>`    | Your root package(s). Required for renaming.     |
-| `-c, --config <file>`         | JSON config (every option settable)              |
-| `--no-names` `--no-strings` ` --no-numbers` `--no-flow` `--no-strip` | Per-pass kill-switches |
-| `--no-flatten`                | Keep original package structure                  |
-| `--name-style ALPHA|CONFUSE|UNICODE` | Identifier style for new names            |
-| `--seed <long>`               | Reproducible builds                              |
-| `-v, --verbose`               | Extra logging                                    |
-| `-m, --mapping <path>`        | Write Proguard mapping file                      |
-| `--watermark <tag>`           | Embed tag in jar for leak tracking               |
-| `--no-junk`                   | Disable junk-method injection                    |
-| `--anti-debug`                | Inject JDWP/agent detection (off by default)     |
-| `--flow-level 0|1|2`          | Off / uniform predicate / polymorphic + GOTO     |
-| `--encrypt-resource <glob>`   | Encrypt jar resources. Repeatable                |
+### Verify
 
-Example config (`crazy.json`):
-
-```json
-{
-  "rootPackages": ["cop"],
-  "renameClasses": true,
-  "renameMethods": true,
-  "renameFields": true,
-  "encryptStrings": true,
-  "obfuscateNumbers": true,
-  "obfuscateFlow": true,
-  "stripMetadata": true,
-  "flattenPackages": true,
-  "flattenedPackage": "a",
-  "nameStyle": "ALPHA",
-  "stringEncryptionChance": 100,
-  "numberObfuscationChance": 70,
-  "flowLevel": 1,
-  "excludeClasses": [
-    "dev/cop/api/**"
-  ],
-  "excludeMembers": [
-    "dev/cop/config/Settings#serialize"
-  ]
-}
+```bash
+java -cp crazy-obfuscator-all.jar dev.crazy.obf.cli.Verify output.jar
 ```
 
-## Gradle plugin usage (COP)
+Structurally validates every class (ASM `CheckClassAdapter`) and flags
+duplicate members — catches malformed output before you ship it.
 
-In `C:\Users\elvin\Downloads\COP\settings.gradle.kts` add an `includeBuild`:
+## Gradle plugin
 
-```kotlin
-includeBuild("../Crazy Java tool") {
-    dependencySubstitution {
-        substitute(module("dev.crazy:crazy-obfuscator")).using(project(":"))
-    }
-}
-```
+The jar also exposes a Gradle plugin (`dev.crazy.obfuscator`) with an
+`obfuscateJar` task and a `crazyObf { ... }` extension mirroring the config.
 
-Or install the plugin into a local maven and use `id("dev.crazy.obfuscator")`.
-Simpler day-to-day approach: just run the CLI after `gradle build`. Add this
-task to your COP `build.gradle.kts`:
+## Recommended config for a Kotlin Fabric mod
 
-```kotlin
-val obfuscatorJar = file("../Crazy Java tool/build/libs/crazy-obfuscator-0.1.0-all.jar")
+Start from `example.json` with:
 
-tasks.register<JavaExec>("obfuscateJar") {
-    group = "build"
-    description = "Run Crazy Obfuscator on the built mod jar"
-    dependsOn("build")
-    classpath = files(obfuscatorJar)
-    val input  = layout.buildDirectory.file("libs/${project.name}-${version}.jar")
-    val output = layout.buildDirectory.file("libs/${project.name}-${version}-obf.jar")
-    args(input.get().asFile.absolutePath,
-         output.get().asFile.absolutePath,
-         "--root-package", "cop",
-         "--seed", "42")
-}
-```
+- `rootPackages` = your mod's package(s)
+- `rewriteKotlinMetadata: true`
+- `renameClasses/Methods/Fields: true`
+- `excludeClasses` for any package you reflect into by constructed
+  (non-literal) names
 
-Then `gradlew obfuscateJar` produces an obfuscated mod jar.
+First run on a real mod may still surface a reflection pattern the scanners
+don't catch — obfuscate, test in-game, add an exclusion if a feature
+misbehaves, repeat. There is no obfuscator that handles an arbitrary
+reflection-heavy mod with zero tuning.
 
-## Fabric / Mixin caveats
+## Caveats
 
-This is the part that ZKM doesn't have to worry about because it's not modding
-Minecraft. Read this before you ship.
-
-1. **Mixin classes are skipped entirely.** Anything annotated `@Mixin` (or
-   listed in a `*.mixins.json`) is no-touch — mixin processor needs the original
-   bytecode. Strings/numbers/flow are not transformed inside them either.
-2. **Fabric entry points are not renamed**, but their internals (strings,
-   numbers, flow) are still obfuscated. The class name stays so the loader can
-   find them.
-3. **Reflection on your own classes** that uses a *non-literal* string (e.g.
-   field name built from concatenation) will NOT be detected. If you reflect on
-   your own fields, either:
-   - add the field name to `excludeMembers`, or
-   - keep the reflection target string as a single LDC literal in your code so
-     the scanner sees it.
-4. **GSON-serialized config classes** must have `excludeClasses` entries — GSON
-   uses the original field names as JSON keys.
-5. **First run will probably break something.** That's expected. Run, see what
-   blows up, add to exclusion list, repeat. There is no obfuscator on the planet
-   that handles a Fabric mod with zero manual tuning.
-6. **You must keep an unobfuscated copy** of every release. If a user reports a
-   stack trace from an obfuscated jar, you'll need the mapping to read it. The
-   tool prints all mappings to stdout — pipe to a file and store it next to the
-   jar.
-
-## What this does NOT do
-
-- Heavy CFG flattening (switch-encoded jumps with stack-machine dispatcher)
-- Native method extraction
-- Class-file splitting / lazy loading
-- Mixin processor integration (we skip mixin classes entirely)
-
-These are real ZKM features. If you actually need them, tell me which and I'll
-add them. They aren't necessary for the "anti-leak / anti-copy" use case — the
-five passes above already produce output that is unpleasant to read.
+- Obfuscation ≠ security. Determined attackers can still reverse it.
+- Keep the mapping file per release (crash-report de-obfuscation).
+- `flowLevel 2` and resource encryption add runtime cost.
+- Generic signatures are preserved (needed for GSON `TypeToken`); they do
+  leak some type info to a determined reader.
 
 ## License
 
-The obfuscator itself is yours to use. Mind the licenses of dependencies:
-ASM (BSD-3), Gson (Apache-2.0), Picocli (Apache-2.0).
+MIT — see [LICENSE](LICENSE). Dependency licenses: ASM (BSD-3), Gson
+(Apache-2.0), Picocli (Apache-2.0), kotlin-metadata-jvm (Apache-2.0).

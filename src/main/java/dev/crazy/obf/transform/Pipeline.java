@@ -34,17 +34,12 @@ public final class Pipeline {
         if (cfg.obfuscateNumbers) p.add(new NumberTransformer());
         if (cfg.obfuscateFlow)    p.add(new FlowTransformer());
         if (cfg.injectJunk)       p.add(new JunkCodeTransformer());
-        // Rewriting wins over stripping. The stripper (legacy) runs BEFORE
-        // rename; the remapper (correct) runs AFTER rename because it needs the
-        // final class map. Only fall back to the stripper if rewriting is off.
-        boolean rewrite = cfg.rewriteKotlinMetadata;
-        if (cfg.stripKotlinMetadata && !rewrite) p.add(new KotlinMetadataStripper());
         // Name transform must come AFTER everything that injects helpers
         // that we want renamed, but BEFORE Watermark/AntiDebug whose own
         // class names are intentionally fixed (`crazy/W`, `crazy/AD`).
         if (cfg.renameClasses || cfg.renameMethods || cfg.renameFields)
             p.add(new NameTransformer());
-        if (rewrite) {
+        if (cfg.rewriteKotlinMetadata) {
             // Order: rename has built the map; first fix metadata, then fix the
             // hardcoded callable-reference signature strings so all three views
             // (metadata, bytecode descriptors, embedded ref strings) agree.
