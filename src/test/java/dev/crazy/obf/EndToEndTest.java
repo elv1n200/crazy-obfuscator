@@ -207,6 +207,32 @@ public class EndToEndTest {
         sum.visitVarInsn(Opcodes.ILOAD, 1);
         sum.visitInsn(Opcodes.IRETURN);
         sum.visitMaxs(0, 0);
+
+        // REFERENCE local written in different blocks, single concrete type
+        // (String) — exercises the null-init reference-slot path.
+        //   static String make(boolean b){
+        //     String r;
+        //     if (b) r = "x"; else r = String.valueOf(b);
+        //     return r;
+        //   }
+        var make = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC,
+            "make", "(Z)Ljava/lang/String;", null, null);
+        org.objectweb.asm.Label mElse = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label mEnd = new org.objectweb.asm.Label();
+        make.visitVarInsn(Opcodes.ILOAD, 0);
+        make.visitJumpInsn(Opcodes.IFEQ, mElse);          // !b -> else
+        make.visitLdcInsn("x");
+        make.visitVarInsn(Opcodes.ASTORE, 1);             // r = "x"
+        make.visitJumpInsn(Opcodes.GOTO, mEnd);
+        make.visitLabel(mElse);
+        make.visitVarInsn(Opcodes.ILOAD, 0);
+        make.visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/String", "valueOf",
+            "(Z)Ljava/lang/String;", false);
+        make.visitVarInsn(Opcodes.ASTORE, 1);             // r = String.valueOf(b)
+        make.visitLabel(mEnd);
+        make.visitVarInsn(Opcodes.ALOAD, 1);
+        make.visitInsn(Opcodes.ARETURN);
+        make.visitMaxs(0, 0);
         cw.visitEnd();
 
         Path inJar = tmp.resolve("in.jar");
@@ -239,6 +265,10 @@ public class EndToEndTest {
             assertEquals(55,   (int) (Integer) sumM.invoke(null, 10),  "sum(10)=55 after flattening w/ locals");
             assertEquals(0,    (int) (Integer) sumM.invoke(null, 0),   "sum(0)=0");
             assertEquals(5050, (int) (Integer) sumM.invoke(null, 100), "sum(100)=5050");
+
+            var makeM = foo.getMethod("make", boolean.class);
+            assertEquals("x",     makeM.invoke(null, true),  "make(true)=\"x\" (ref local flattened)");
+            assertEquals("false", makeM.invoke(null, false), "make(false)=String.valueOf(false)");
         }
     }
 }
