@@ -38,13 +38,26 @@ public final class StringEncryptionTransformer implements Transformer {
     private static final String DECODER_PREFIX = "CRAZY$d";
     private static final String DECODER_DESC   = "(Ljava/lang/String;I)Ljava/lang/String;";
 
-    /** Per-class decoder spec. */
+    /**
+     * Per-class decoder spec. The keystream is a keyed LCG whose output is
+     * xorshift-mixed, seeded from the per-call-site salt:
+     *
+     *   st = salt
+     *   repeat:  st = st*A + C;  k = st; k ^= k>>>13; k ^= k<<9; k ^= k>>>17;
+     *            cipher[i] ^= (k & 0x7FFF)
+     *
+     * A is odd (full-period LCG over 2^32). The nonlinear mix means an
+     * attacker can't recover A/C from a couple of known plaintext chars and
+     * decrypt the rest with linear algebra (the old (salt*mult+i*add) scheme
+     * could be solved from two chars). Still ~8 int ops/char, fully reversible
+     * (XOR the identical stream), deterministic across offline encode + the
+     * injected runtime decoder.
+     */
     private static final class Spec {
         final String methodName;
-        final int mult;
-        final int add;
-        final int shape; // 0,1,2: three equivalent decoder bodies
-        Spec(String n, int m, int a, int s) { methodName = n; mult = m; add = a; shape = s; }
+        final int a;   // LCG multiplier (odd)
+        final int c;   // LCG increment
+        Spec(String n, int a, int c) { methodName = n; this.a = a; this.c = c; }
     }
 
     private final Map<String, Spec> specs = new HashMap<>();
@@ -80,8 +93,8 @@ public final class StringEncryptionTransformer implements Transformer {
 
                     if (spec == null) spec = mintSpec(cn.name, rng);
 
-                    int salt = rng.nextInt(0x7FFE) + 1;
-                    String enc = transform(s, salt, spec.mult, spec.add);
+                    int salt = rng.nextInt();
+                    String enc = transform(s, salt, spec.a, spec.c);
 
                     InsnList replacement = new InsnList();
                     replacement.add(new LdcInsnNode(enc));
@@ -101,13 +114,11 @@ public final class StringEncryptionTransformer implements Transformer {
     }
 
     private Spec mintSpec(String classKey, Random rng) {
-        // odd multipliers only so the (salt*mult+i*add) function is more diverse
-        int mult = (rng.nextInt(127) | 1) + 2;  // 3..255 odd
-        int add  = (rng.nextInt(127) | 1) + 2;
-        int shape = rng.nextInt(3);
+        int a = rng.nextInt() | 1;   // odd -> full-period LCG mod 2^32
+        int c = rng.nextInt() | 1;
         StringBuilder suffix = new StringBuilder();
-        for (int i = 0; i < 3; i++) suffix.append((char)('a' + rng.nextInt(26)));
-        return new Spec(DECODER_PREFIX + suffix, mult, add, shape);
+        for (int i = 0; i < 4; i++) suffix.append((char)('a' + rng.nextInt(26)));
+        return new Spec(DECODER_PREFIX + suffix, a, c);
     }
 
     private void injectDecoder(ClassNode cn, Spec spec) {
@@ -120,27 +131,33 @@ public final class StringEncryptionTransformer implements Transformer {
             Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC,
             spec.methodName, DECODER_DESC, null, null);
 
-        // Three equivalent shapes — same arithmetic, different opcode sequence.
-        // All produce: c[i] = (char)(c[i] ^ ((salt*mult + i*add) & 0x7FFF))
-        switch (spec.shape) {
-            case 0 -> emitShapeMulAdd(mn, spec);
-            case 1 -> emitShapeAddMul(mn, spec);
-            default -> emitShapeRolling(mn, spec);
-        }
+        emitDecoder(mn, spec);
 
         if (cn.methods == null) cn.methods = new java.util.ArrayList<>();
         cn.methods.add(mn);
     }
 
-    /** Shape 0: c[i] ^= ((salt*mult + i*add) & 0x7FFF) */
-    private void emitShapeMulAdd(MethodNode mn, Spec spec) {
-        // s -> chars in slot 2
+    /**
+     * Emits: locals — s@0, salt@1, c@2 (char[]), i@3, st@4, k@5.
+     *
+     *   c = s.toCharArray(); st = salt;
+     *   for (i=0; i<c.length; i++) {
+     *       st = st*A + C;
+     *       k = st; k ^= k>>>13; k ^= k<<9; k ^= k>>>17;
+     *       c[i] = (char)(c[i] ^ (k & 0x7FFF));
+     *   }
+     *   return new String(c).intern();
+     */
+    private void emitDecoder(MethodNode mn, Spec spec) {
         mn.visitVarInsn(Opcodes.ALOAD, 0);
         mn.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "toCharArray", "()[C", false);
         mn.visitVarInsn(Opcodes.ASTORE, 2);
 
+        mn.visitVarInsn(Opcodes.ILOAD, 1);
+        mn.visitVarInsn(Opcodes.ISTORE, 4);            // st = salt
+
         mn.visitInsn(Opcodes.ICONST_0);
-        mn.visitVarInsn(Opcodes.ISTORE, 3);
+        mn.visitVarInsn(Opcodes.ISTORE, 3);            // i = 0
 
         Label loop = new Label(), end = new Label();
         mn.visitLabel(loop);
@@ -149,119 +166,51 @@ public final class StringEncryptionTransformer implements Transformer {
         mn.visitInsn(Opcodes.ARRAYLENGTH);
         mn.visitJumpInsn(Opcodes.IF_ICMPGE, end);
 
-        mn.visitVarInsn(Opcodes.ALOAD, 2);
-        mn.visitVarInsn(Opcodes.ILOAD, 3);
-
-        mn.visitVarInsn(Opcodes.ALOAD, 2);
-        mn.visitVarInsn(Opcodes.ILOAD, 3);
-        mn.visitInsn(Opcodes.CALOAD);
-
-        // salt*mult + i*add
-        mn.visitVarInsn(Opcodes.ILOAD, 1);
-        pushIntConst(mn, spec.mult);
+        // st = st*A + C
+        mn.visitVarInsn(Opcodes.ILOAD, 4);
+        pushIntConst(mn, spec.a);
         mn.visitInsn(Opcodes.IMUL);
-        mn.visitVarInsn(Opcodes.ILOAD, 3);
-        pushIntConst(mn, spec.add);
-        mn.visitInsn(Opcodes.IMUL);
+        pushIntConst(mn, spec.c);
         mn.visitInsn(Opcodes.IADD);
-        mn.visitLdcInsn(0x7FFF);
-        mn.visitInsn(Opcodes.IAND);
-
-        mn.visitInsn(Opcodes.IXOR);
-        mn.visitInsn(Opcodes.I2C);
-        mn.visitInsn(Opcodes.CASTORE);
-
-        mn.visitIincInsn(3, 1);
-        mn.visitJumpInsn(Opcodes.GOTO, loop);
-
-        mn.visitLabel(end);
-        emitReturnNewString(mn);
-    }
-
-    /** Shape 1: tmp = i*add; tmp += salt*mult; mask&XOR */
-    private void emitShapeAddMul(MethodNode mn, Spec spec) {
-        mn.visitVarInsn(Opcodes.ALOAD, 0);
-        mn.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "toCharArray", "()[C", false);
-        mn.visitVarInsn(Opcodes.ASTORE, 2);
-
-        mn.visitInsn(Opcodes.ICONST_0);
-        mn.visitVarInsn(Opcodes.ISTORE, 3);
-
-        Label loop = new Label(), end = new Label();
-        mn.visitLabel(loop);
-        mn.visitVarInsn(Opcodes.ILOAD, 3);
-        mn.visitVarInsn(Opcodes.ALOAD, 2);
-        mn.visitInsn(Opcodes.ARRAYLENGTH);
-        mn.visitJumpInsn(Opcodes.IF_ICMPGE, end);
-
-        // tmp = i*add + salt*mult
-        mn.visitVarInsn(Opcodes.ILOAD, 3);
-        pushIntConst(mn, spec.add);
-        mn.visitInsn(Opcodes.IMUL);
-        mn.visitVarInsn(Opcodes.ILOAD, 1);
-        pushIntConst(mn, spec.mult);
-        mn.visitInsn(Opcodes.IMUL);
-        mn.visitInsn(Opcodes.IADD);
-        mn.visitLdcInsn(0x7FFF);
-        mn.visitInsn(Opcodes.IAND);
         mn.visitVarInsn(Opcodes.ISTORE, 4);
 
+        // k = st
+        mn.visitVarInsn(Opcodes.ILOAD, 4);
+        mn.visitVarInsn(Opcodes.ISTORE, 5);
+        // k ^= k >>> 13
+        mn.visitVarInsn(Opcodes.ILOAD, 5);
+        mn.visitVarInsn(Opcodes.ILOAD, 5);
+        pushIntConst(mn, 13);
+        mn.visitInsn(Opcodes.IUSHR);
+        mn.visitInsn(Opcodes.IXOR);
+        mn.visitVarInsn(Opcodes.ISTORE, 5);
+        // k ^= k << 9
+        mn.visitVarInsn(Opcodes.ILOAD, 5);
+        mn.visitVarInsn(Opcodes.ILOAD, 5);
+        pushIntConst(mn, 9);
+        mn.visitInsn(Opcodes.ISHL);
+        mn.visitInsn(Opcodes.IXOR);
+        mn.visitVarInsn(Opcodes.ISTORE, 5);
+        // k ^= k >>> 17
+        mn.visitVarInsn(Opcodes.ILOAD, 5);
+        mn.visitVarInsn(Opcodes.ILOAD, 5);
+        pushIntConst(mn, 17);
+        mn.visitInsn(Opcodes.IUSHR);
+        mn.visitInsn(Opcodes.IXOR);
+        mn.visitVarInsn(Opcodes.ISTORE, 5);
+
+        // c[i] = (char)(c[i] ^ (k & 0x7FFF))
         mn.visitVarInsn(Opcodes.ALOAD, 2);
         mn.visitVarInsn(Opcodes.ILOAD, 3);
         mn.visitVarInsn(Opcodes.ALOAD, 2);
         mn.visitVarInsn(Opcodes.ILOAD, 3);
         mn.visitInsn(Opcodes.CALOAD);
-        mn.visitVarInsn(Opcodes.ILOAD, 4);
-        mn.visitInsn(Opcodes.IXOR);
-        mn.visitInsn(Opcodes.I2C);
-        mn.visitInsn(Opcodes.CASTORE);
-
-        mn.visitIincInsn(3, 1);
-        mn.visitJumpInsn(Opcodes.GOTO, loop);
-
-        mn.visitLabel(end);
-        emitReturnNewString(mn);
-    }
-
-    /** Shape 2: rolling — k starts at salt*mult, advances by `add` per char. Mathematically the same. */
-    private void emitShapeRolling(MethodNode mn, Spec spec) {
-        mn.visitVarInsn(Opcodes.ALOAD, 0);
-        mn.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "toCharArray", "()[C", false);
-        mn.visitVarInsn(Opcodes.ASTORE, 2);
-
-        // int k = salt * mult
-        mn.visitVarInsn(Opcodes.ILOAD, 1);
-        pushIntConst(mn, spec.mult);
-        mn.visitInsn(Opcodes.IMUL);
-        mn.visitVarInsn(Opcodes.ISTORE, 4);
-
-        mn.visitInsn(Opcodes.ICONST_0);
-        mn.visitVarInsn(Opcodes.ISTORE, 3);
-
-        Label loop = new Label(), end = new Label();
-        mn.visitLabel(loop);
-        mn.visitVarInsn(Opcodes.ILOAD, 3);
-        mn.visitVarInsn(Opcodes.ALOAD, 2);
-        mn.visitInsn(Opcodes.ARRAYLENGTH);
-        mn.visitJumpInsn(Opcodes.IF_ICMPGE, end);
-
-        mn.visitVarInsn(Opcodes.ALOAD, 2);
-        mn.visitVarInsn(Opcodes.ILOAD, 3);
-        mn.visitVarInsn(Opcodes.ALOAD, 2);
-        mn.visitVarInsn(Opcodes.ILOAD, 3);
-        mn.visitInsn(Opcodes.CALOAD);
-        mn.visitVarInsn(Opcodes.ILOAD, 4);
+        mn.visitVarInsn(Opcodes.ILOAD, 5);
         mn.visitLdcInsn(0x7FFF);
         mn.visitInsn(Opcodes.IAND);
         mn.visitInsn(Opcodes.IXOR);
         mn.visitInsn(Opcodes.I2C);
         mn.visitInsn(Opcodes.CASTORE);
-
-        // k += add
-        mn.visitVarInsn(Opcodes.ILOAD, 4);
-        pushIntConst(mn, spec.add);
-        mn.visitInsn(Opcodes.IADD);
-        mn.visitVarInsn(Opcodes.ISTORE, 4);
 
         mn.visitIincInsn(3, 1);
         mn.visitJumpInsn(Opcodes.GOTO, loop);
@@ -287,12 +236,22 @@ public final class StringEncryptionTransformer implements Transformer {
         else mn.visitLdcInsn(v);
     }
 
-    /** Symmetric transform — XOR with the same key sequence used by the decoder. */
-    private static String transform(String s, int salt, int mult, int add) {
+    /**
+     * Symmetric transform — XORs with the exact same keystream the injected
+     * decoder regenerates. Must mirror {@link #emitDecoder} bit-for-bit; JVM
+     * int ops (IMUL/IADD/IUSHR/ISHL/IXOR) match Java int semantics, so offline
+     * encode and runtime decode stay in lockstep. Package-private for tests.
+     */
+    public static String transform(String s, int salt, int a, int c0) {
         char[] c = s.toCharArray();
+        int st = salt;
         for (int i = 0; i < c.length; i++) {
-            int k = (salt * mult + i * add) & 0x7FFF;
-            c[i] = (char) (c[i] ^ k);
+            st = st * a + c0;
+            int k = st;
+            k ^= k >>> 13;
+            k ^= k << 9;
+            k ^= k >>> 17;
+            c[i] = (char) (c[i] ^ (k & 0x7FFF));
         }
         return new String(c);
     }
