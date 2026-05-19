@@ -12,6 +12,9 @@
 
   "encryptStrings": true,
   "stringEncryptionChance": 100,
+  "_targeted": "Optional: encrypt ONLY matching strings (e.g. hide just a URL). Leave both empty for normal behaviour. Set stringEncryptionChance:0 to encrypt ONLY these.",
+  "encryptStringsExact": [],
+  "encryptStringsMatching": [],
   "obfuscateNumbers": true,
   "numberObfuscationChance": 60,
   "obfuscateFlow": true,

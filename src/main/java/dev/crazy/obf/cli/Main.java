@@ -39,6 +39,8 @@ public final class Main implements Callable<Integer> {
     @Option(names = {"--no-junk"}, description = "Disable junk-method injection") boolean noJunk;
     @Option(names = {"--anti-debug"}, description = "Inject anti-debug check class") boolean antiDebug;
     @Option(names = {"--encrypt-resource"}, description = "Glob of resources to encrypt. Repeatable.", arity = "1..*") String[] encryptResources;
+    @Option(names = {"--encrypt-string"}, description = "Encrypt ONLY this exact string literal. Repeatable.", arity = "1..*") String[] encryptStringExact;
+    @Option(names = {"--encrypt-string-regex"}, description = "Encrypt ONLY string literals matching this regex. Repeatable.", arity = "1..*") String[] encryptStringRegex;
     @Option(names = {"--flow-level"}, description = "Control-flow level: 0|1|2") Integer flowLevel;
     @Option(names = {"--flatten"}, description = "Enable control-flow flattening (dispatcher loop)") boolean flatten;
     @Option(names = {"--flatten-chance"}, description = "0-100: chance an eligible method is flattened") Integer flattenChance;
@@ -68,6 +70,12 @@ public final class Main implements Callable<Integer> {
         if (antiDebug)           cfg.antiDebug = true;
         if (encryptResources != null) {
             cfg.encryptResources = new java.util.ArrayList<>(java.util.Arrays.asList(encryptResources));
+        }
+        if (encryptStringExact != null) {
+            cfg.encryptStringsExact = new java.util.ArrayList<>(java.util.Arrays.asList(encryptStringExact));
+        }
+        if (encryptStringRegex != null) {
+            cfg.encryptStringsMatching = new java.util.ArrayList<>(java.util.Arrays.asList(encryptStringRegex));
         }
         if (flowLevel != null)   cfg.flowLevel = flowLevel;
         if (flatten)             cfg.flattenControlFlow = true;

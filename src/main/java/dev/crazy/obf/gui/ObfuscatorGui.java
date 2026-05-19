@@ -38,6 +38,7 @@ public final class ObfuscatorGui {
     private final JTextField output  = new JTextField(34);
     private final JTextField roots   = new JTextField("", 34);
     private final JTextField mapping = new JTextField("", 34);
+    private final JTextField onlyStrings = new JTextField("", 34);
 
     private final JCheckBox cName   = cb("Rename classes / methods / fields", true);
     private final JCheckBox cStr    = cb("Encrypt strings", true);
@@ -81,6 +82,8 @@ public final class ObfuscatorGui {
         y = fileRow(form, g, y, "Output .jar", output, true);
         y = textRow(form, g, y, "Root package(s)", roots, "comma-separated, e.g. cop");
         y = textRow(form, g, y, "Mapping file", mapping, "for de-obfuscating crash reports");
+        y = textRow(form, g, y, "Encrypt only (regex)", onlyStrings,
+            "optional — comma-sep regex; only matching strings get encrypted (e.g. ^https?://)");
 
         // options
         JPanel opts = new JPanel(new GridLayout(0, 2, 4, 2));
@@ -215,6 +218,14 @@ public final class ObfuscatorGui {
         boolean rn = cName.isSelected();
         cfg.renameClasses = rn; cfg.renameMethods = rn; cfg.renameFields = rn;
         cfg.encryptStrings = cStr.isSelected();
+        // targeted string encryption: if the "Encrypt only (regex)" field has
+        // entries, only those get encrypted (force the pass on so it runs).
+        cfg.encryptStringsMatching = new ArrayList<>();
+        for (String p : onlyStrings.getText().split(",")) {
+            p = p.trim();
+            if (!p.isEmpty()) cfg.encryptStringsMatching.add(p);
+        }
+        if (!cfg.encryptStringsMatching.isEmpty()) cfg.encryptStrings = true;
         cfg.obfuscateNumbers = cNum.isSelected();
         cfg.obfuscateFlow = cFlow.isSelected();
         cfg.flattenControlFlow = cFlat.isSelected();

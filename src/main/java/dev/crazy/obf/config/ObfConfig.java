@@ -43,6 +43,18 @@ public final class ObfConfig {
     /** Chance (0-100) that a given string literal gets encrypted. */
     public int stringEncryptionChance = 100;
 
+    /**
+     * Targeted string encryption. If either list is non-empty, ONLY matching
+     * string literals are encrypted (everything else stays plaintext) — e.g.
+     * hide just a URL/endpoint without touching all strings.
+     *   encryptStringsExact    — exact literal values
+     *   encryptStringsMatching — regexes (substring match; invalid regex is
+     *                            treated as a literal)
+     * Works even with stringEncryptionChance = 0.
+     */
+    public java.util.List<String> encryptStringsExact = new java.util.ArrayList<>();
+    public java.util.List<String> encryptStringsMatching = new java.util.ArrayList<>();
+
     /** Chance (0-100) that a given number constant gets transformed. */
     public int numberObfuscationChance = 70;
 

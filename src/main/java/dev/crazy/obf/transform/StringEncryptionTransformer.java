@@ -67,7 +67,25 @@ public final class StringEncryptionTransformer implements Transformer {
     @Override
     public void apply(ObfContext ctx) {
         int chance = clamp(ctx.config().stringEncryptionChance, 0, 100);
-        if (chance <= 0) return;
+
+        // Targeted mode: if exact strings and/or regexes are configured, ONLY
+        // matching literals are encrypted (everything else stays plaintext).
+        // Lets you hide just a URL/endpoint/token without the cost & risk of
+        // encrypting every string. Active even if chance == 0.
+        java.util.Set<String> exact = new java.util.HashSet<>(
+            ctx.config().encryptStringsExact == null ? java.util.List.of() : ctx.config().encryptStringsExact);
+        java.util.List<java.util.regex.Pattern> patterns = new java.util.ArrayList<>();
+        if (ctx.config().encryptStringsMatching != null) {
+            for (String p : ctx.config().encryptStringsMatching) {
+                if (p == null || p.isEmpty()) continue;
+                try { patterns.add(java.util.regex.Pattern.compile(p)); }
+                catch (java.util.regex.PatternSyntaxException e) {
+                    patterns.add(java.util.regex.Pattern.compile(java.util.regex.Pattern.quote(p)));
+                }
+            }
+        }
+        boolean targeted = !exact.isEmpty() || !patterns.isEmpty();
+        if (chance <= 0 && !targeted) return;
         Random rng = new Random(ctx.seed() ^ 0xDECAFC0FFEEL);
 
         for (ClassNode cn : ctx.contents().classes().values()) {
@@ -87,9 +105,18 @@ public final class StringEncryptionTransformer implements Transformer {
                     if (!(ins instanceof LdcInsnNode ldc)) continue;
                     if (!(ldc.cst instanceof String s)) continue;
                     if (s.isEmpty()) continue;
+                    // Never encrypt strings the scanners flagged as runtime-critical
+                    // (reflection/mixin/Fabric names) — that holds even in targeted mode.
                     if (ctx.exclusions().shouldPreserveString(s)) continue;
-                    if (looksLikeReference(s)) continue;
-                    if (rng.nextInt(100) >= chance) continue;
+                    if (targeted) {
+                        // explicit selection: only matching literals, and an
+                        // explicit pick overrides the looksLikeReference skip
+                        // (so URLs/identifiers the user named DO get encrypted)
+                        if (!isTargeted(s, exact, patterns)) continue;
+                    } else {
+                        if (looksLikeReference(s)) continue;
+                        if (rng.nextInt(100) >= chance) continue;
+                    }
 
                     if (spec == null) spec = mintSpec(cn.name, rng);
 
@@ -261,6 +288,14 @@ public final class StringEncryptionTransformer implements Transformer {
         if (v >= Byte.MIN_VALUE && v <= Byte.MAX_VALUE)  return new IntInsnNode(Opcodes.BIPUSH, v);
         if (v >= Short.MIN_VALUE && v <= Short.MAX_VALUE) return new IntInsnNode(Opcodes.SIPUSH, v);
         return new LdcInsnNode(v);
+    }
+
+    /** Targeted-mode predicate: exact match OR any regex matches (substring). */
+    public static boolean isTargeted(String s, java.util.Set<String> exact,
+                                     java.util.List<java.util.regex.Pattern> patterns) {
+        if (exact != null && exact.contains(s)) return true;
+        if (patterns != null) for (var p : patterns) if (p.matcher(s).find()) return true;
+        return false;
     }
 
     private static boolean looksLikeReference(String s) {
