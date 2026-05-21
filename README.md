@@ -31,6 +31,8 @@ license — don't redistribute obfuscated builds of other people's mods.
 | **Number obfuscation** | Replaces int/long constants with arithmetic identities. |
 | **Control-flow** | Opaque-predicate guards (`flowLevel` 1); level 2 adds polymorphic guards + scattered GOTO chains. |
 | **Flatten** (experimental) | Opt-in dispatcher-loop flattening. Sound subset only: skips try/catch, monitors, switches, and methods with written *reference* locals (Kotlin capture cells / `$default` synthetics make those verifier-unsafe). Off by default — **test the obfuscated jar before shipping**. Full reference-local coverage needs a typed-SSA pass and is a deliberate non-goal. |
+| **Condy string hiding** (opt-in) | Replaces `ldc "text"` with a `CONSTANT_Dynamic` resolved by an injected bootstrap (`crazy/C`) at link time. No plaintext and no visible decoder call — opaque to `javap -c` and decompilers. Requires class-file v55+ (Java 11); older classes fall back to the inline decoder. Honours targeted-string selection. |
+| **Anti-decompile** (opt-in) | Decompiler-confusion pass. Wraps eligible methods (no existing try/catch) in a fake `catch (Throwable) { throw t; }` whose handler is appended at method end. Behaviour-neutral — any exception still propagates with the same trace — but the irreducible exception edge makes CFR/Vineflower/Procyon emit garbage or bail. **Does not hide anything from `javap`**; pair with string/number passes for real secrecy. |
 | **Junk code** | Injects unreachable synthetic methods (collision-safe `CRAZY$j` names). |
 | **Metadata stripping** | Removes `SourceFile`, line numbers, local-variable tables, parameter names. |
 | **Watermarking** | Embeds a build tag + `META-INF/crazy-build.txt` for leak tracing. |

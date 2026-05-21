@@ -14,7 +14,7 @@ import java.util.concurrent.Callable;
 @Command(
     name = "crazy-obf",
     mixinStandardHelpOptions = true,
-    version = "Crazy Obfuscator 0.6.0",
+    version = "Crazy Obfuscator 0.7.0",
     description = "Java/Fabric .jar obfuscator (names, strings, numbers, flow, strip)."
 )
 public final class Main implements Callable<Integer> {
@@ -45,6 +45,9 @@ public final class Main implements Callable<Integer> {
     @Option(names = {"--flatten"}, description = "Enable control-flow flattening (dispatcher loop)") boolean flatten;
     @Option(names = {"--flatten-chance"}, description = "0-100: chance an eligible method is flattened") Integer flattenChance;
     @Option(names = {"--rewrite-kotlin-metadata"}, description = "Rewrite Kotlin metadata to match renames (required for Kotlin codebases)") boolean rewriteKotlinMetadata;
+    @Option(names = {"--anti-decompile"}, description = "Decompiler-confusion: wrap methods in opaque rethrow handlers (behavior-neutral; breaks CFR/Vineflower, not javap)") boolean antiDecompile;
+    @Option(names = {"--anti-decompile-chance"}, description = "0-100: chance an eligible method gets the anti-decompile wrap") Integer antiDecompileChance;
+    @Option(names = {"--hide-strings-condy"}, description = "Hide string literals behind CONSTANT_Dynamic (condy) instead of an inline decoder") boolean hideStringsCondy;
 
     @Override
     public Integer call() throws Exception {
@@ -81,6 +84,9 @@ public final class Main implements Callable<Integer> {
         if (flatten)             cfg.flattenControlFlow = true;
         if (flattenChance != null) cfg.flattenChance = flattenChance;
         if (rewriteKotlinMetadata) cfg.rewriteKotlinMetadata = true;
+        if (antiDecompile)         cfg.antiDecompile = true;
+        if (antiDecompileChance != null) cfg.antiDecompileChance = antiDecompileChance;
+        if (hideStringsCondy)      cfg.hideStringsCondy = true;
 
         CrazyObfuscator.run(input, output, cfg, System.out);
         return 0;

@@ -34,6 +34,7 @@ public final class Pipeline {
         if (cfg.obfuscateNumbers) p.add(new NumberTransformer());
         if (cfg.obfuscateFlow)    p.add(new FlowTransformer());
         if (cfg.flattenControlFlow) p.add(new ControlFlowFlattenTransformer(log));
+        if (cfg.antiDecompile)    p.add(new AntiDecompileTransformer(log));
         if (cfg.injectJunk)       p.add(new JunkCodeTransformer());
         // Name transform must come AFTER everything that injects helpers
         // that we want renamed, but BEFORE Watermark/AntiDebug whose own

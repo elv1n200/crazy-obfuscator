@@ -1,6 +1,10 @@
 package dev.crazy.obf.transform;
 
 import dev.crazy.obf.model.ObfContext;
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.ConstantDynamic;
+import org.objectweb.asm.Handle;
 import org.objectweb.asm.Label;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AbstractInsnNode;
@@ -37,6 +41,14 @@ public final class StringEncryptionTransformer implements Transformer {
 
     private static final String DECODER_PREFIX = "CRAZY$d";
     private static final String DECODER_DESC   = "(Ljava/lang/String;I)Ljava/lang/String;";
+
+    /** Injected condy bootstrap (only when hideStringsCondy is enabled). */
+    public  static final String CONDY = "crazy/C";
+    private static final String CONDY_BSM_DESC =
+        "(Ljava/lang/invoke/MethodHandles$Lookup;Ljava/lang/String;Ljava/lang/Class;"
+      + "Ljava/lang/String;III)Ljava/lang/Object;";
+    private static final Handle CONDY_BSM =
+        new Handle(Opcodes.H_INVOKESTATIC, CONDY, "s", CONDY_BSM_DESC, false);
 
     /**
      * Per-class decoder spec. The keystream is a keyed LCG whose output is
@@ -86,12 +98,19 @@ public final class StringEncryptionTransformer implements Transformer {
         }
         boolean targeted = !exact.isEmpty() || !patterns.isEmpty();
         if (chance <= 0 && !targeted) return;
+        boolean condyMode = ctx.config().hideStringsCondy;
+        boolean anyCondy = false;
         Random rng = new Random(ctx.seed() ^ 0xDECAFC0FFEEL);
 
         for (ClassNode cn : ctx.contents().classes().values()) {
             if (ctx.exclusions().isClassNoTouch(cn.name)) continue;
+            if (cn.name.equals(CONDY)) continue;
             if (cn.methods == null || cn.methods.isEmpty()) continue;
             if ((cn.access & Opcodes.ACC_INTERFACE) != 0) continue;
+
+            // condy needs class-file version >= 55 (Java 11); older classes
+            // transparently fall back to the inline decoder method.
+            boolean useCondy = condyMode && (cn.version & 0xFFFF) >= Opcodes.V11;
 
             boolean touched = false;
             Spec spec = null;
@@ -118,6 +137,23 @@ public final class StringEncryptionTransformer implements Transformer {
                         if (rng.nextInt(100) >= chance) continue;
                     }
 
+                    if (useCondy) {
+                        // ldc "text"  ->  ldc CONSTANT_Dynamic(s)  whose bootstrap
+                        // (crazy/C.s) regenerates the keystream and returns the
+                        // decoded String at link time. No plaintext, no visible
+                        // decoder call — opaque to javap and decompilers alike.
+                        int salt = rng.nextInt();
+                        int a = rng.nextInt() | 1;       // odd -> full-period LCG
+                        int c = rng.nextInt() | 1;
+                        String enc = transform(s, salt, a, c);
+                        ConstantDynamic cd = new ConstantDynamic(
+                            "s", "Ljava/lang/String;", CONDY_BSM, enc, salt, a, c);
+                        m.instructions.set(ins, new LdcInsnNode(cd));
+                        anyCondy = true;
+                        touched = true;
+                        continue;
+                    }
+
                     if (spec == null) spec = mintSpec(cn.name, rng);
 
                     int salt = rng.nextInt();
@@ -138,6 +174,119 @@ public final class StringEncryptionTransformer implements Transformer {
                 specs.put(cn.name, spec);
             }
         }
+
+        if (anyCondy) injectCondyBootstrap(ctx);
+    }
+
+    /**
+     * Injects {@code crazy/C} (once per jar) with the condy bootstrap:
+     *
+     *   public static Object s(Lookup l, String name, Class&lt;?&gt; type,
+     *                          String enc, int salt, int a, int c) {
+     *       char[] arr = enc.toCharArray();
+     *       int st = salt;
+     *       for (int i = 0; i &lt; arr.length; i++) {
+     *           st = st*a + c;
+     *           int k = st; k ^= k>>>13; k ^= k<<9; k ^= k>>>17;
+     *           arr[i] = (char)(arr[i] ^ (k & 0x7FFF));
+     *       }
+     *       return new String(arr).intern();
+     *   }
+     *
+     * Same keystream as {@link #transform} / {@link #emitDecoder}, so encode and
+     * link-time decode stay in lockstep.
+     */
+    private void injectCondyBootstrap(ObfContext ctx) {
+        if (ctx.contents().classes().containsKey(CONDY)) return;
+        ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        cw.visit(Opcodes.V11, Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SYNTHETIC,
+            CONDY, null, "java/lang/Object", null);
+
+        var ctor = cw.visitMethod(Opcodes.ACC_PRIVATE, "<init>", "()V", null, null);
+        ctor.visitVarInsn(Opcodes.ALOAD, 0);
+        ctor.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        ctor.visitInsn(Opcodes.RETURN);
+        ctor.visitMaxs(0, 0);
+
+        var s = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "s", CONDY_BSM_DESC, null, null);
+        // arr = enc.toCharArray()  (local 7)
+        s.visitVarInsn(Opcodes.ALOAD, 3);
+        s.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "toCharArray", "()[C", false);
+        s.visitVarInsn(Opcodes.ASTORE, 7);
+        // st = salt  (local 8)
+        s.visitVarInsn(Opcodes.ILOAD, 4);
+        s.visitVarInsn(Opcodes.ISTORE, 8);
+        // i = 0  (local 9)
+        s.visitInsn(Opcodes.ICONST_0);
+        s.visitVarInsn(Opcodes.ISTORE, 9);
+
+        Label loop = new Label(), end = new Label();
+        s.visitLabel(loop);
+        s.visitVarInsn(Opcodes.ILOAD, 9);
+        s.visitVarInsn(Opcodes.ALOAD, 7);
+        s.visitInsn(Opcodes.ARRAYLENGTH);
+        s.visitJumpInsn(Opcodes.IF_ICMPGE, end);
+
+        // st = st*a + c
+        s.visitVarInsn(Opcodes.ILOAD, 8);
+        s.visitVarInsn(Opcodes.ILOAD, 5);
+        s.visitInsn(Opcodes.IMUL);
+        s.visitVarInsn(Opcodes.ILOAD, 6);
+        s.visitInsn(Opcodes.IADD);
+        s.visitVarInsn(Opcodes.ISTORE, 8);
+        // k = st  (local 10)
+        s.visitVarInsn(Opcodes.ILOAD, 8);
+        s.visitVarInsn(Opcodes.ISTORE, 10);
+        // k ^= k >>> 13
+        s.visitVarInsn(Opcodes.ILOAD, 10);
+        s.visitVarInsn(Opcodes.ILOAD, 10);
+        s.visitIntInsn(Opcodes.BIPUSH, 13);
+        s.visitInsn(Opcodes.IUSHR);
+        s.visitInsn(Opcodes.IXOR);
+        s.visitVarInsn(Opcodes.ISTORE, 10);
+        // k ^= k << 9
+        s.visitVarInsn(Opcodes.ILOAD, 10);
+        s.visitVarInsn(Opcodes.ILOAD, 10);
+        s.visitIntInsn(Opcodes.BIPUSH, 9);
+        s.visitInsn(Opcodes.ISHL);
+        s.visitInsn(Opcodes.IXOR);
+        s.visitVarInsn(Opcodes.ISTORE, 10);
+        // k ^= k >>> 17
+        s.visitVarInsn(Opcodes.ILOAD, 10);
+        s.visitVarInsn(Opcodes.ILOAD, 10);
+        s.visitIntInsn(Opcodes.BIPUSH, 17);
+        s.visitInsn(Opcodes.IUSHR);
+        s.visitInsn(Opcodes.IXOR);
+        s.visitVarInsn(Opcodes.ISTORE, 10);
+        // arr[i] = (char)(arr[i] ^ (k & 0x7FFF))
+        s.visitVarInsn(Opcodes.ALOAD, 7);
+        s.visitVarInsn(Opcodes.ILOAD, 9);
+        s.visitVarInsn(Opcodes.ALOAD, 7);
+        s.visitVarInsn(Opcodes.ILOAD, 9);
+        s.visitInsn(Opcodes.CALOAD);
+        s.visitVarInsn(Opcodes.ILOAD, 10);
+        s.visitLdcInsn(0x7FFF);
+        s.visitInsn(Opcodes.IAND);
+        s.visitInsn(Opcodes.IXOR);
+        s.visitInsn(Opcodes.I2C);
+        s.visitInsn(Opcodes.CASTORE);
+
+        s.visitIincInsn(9, 1);
+        s.visitJumpInsn(Opcodes.GOTO, loop);
+
+        s.visitLabel(end);
+        s.visitTypeInsn(Opcodes.NEW, "java/lang/String");
+        s.visitInsn(Opcodes.DUP);
+        s.visitVarInsn(Opcodes.ALOAD, 7);
+        s.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/String", "<init>", "([C)V", false);
+        s.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "intern", "()Ljava/lang/String;", false);
+        s.visitInsn(Opcodes.ARETURN);
+        s.visitMaxs(0, 0);
+
+        cw.visitEnd();
+        ClassNode cn = new ClassNode();
+        new ClassReader(cw.toByteArray()).accept(cn, 0);
+        ctx.contents().classes().put(cn.name, cn);
     }
 
     private Spec mintSpec(String classKey, Random rng) {

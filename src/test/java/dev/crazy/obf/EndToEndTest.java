@@ -140,6 +140,141 @@ public class EndToEndTest {
     }
 
     /**
+     * Condy string hiding: with hideStringsCondy the ldc "secret" becomes a
+     * CONSTANT_Dynamic resolved by the injected crazy/C bootstrap. Verifies:
+     *   - the plaintext is gone from the (decompressed) class bytes
+     *   - the string still materialises to its original value at runtime
+     *   - the crazy/C bootstrap class was injected
+     */
+    @Test
+    void condyStringHidingResolvesAtRuntime(@org.junit.jupiter.api.io.TempDir Path tmp) throws Exception {
+        final String SECRET = "https://secret.example.com/key=ABCDEF";
+        ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, "crazy_e2e_c/Foo", null, "java/lang/Object", null);
+        var ctor = cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+        ctor.visitVarInsn(Opcodes.ALOAD, 0);
+        ctor.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        ctor.visitInsn(Opcodes.RETURN); ctor.visitMaxs(0, 0);
+        var secret = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "secret", "()Ljava/lang/String;", null, null);
+        secret.visitLdcInsn(SECRET);
+        secret.visitInsn(Opcodes.ARETURN); secret.visitMaxs(0, 0);
+        cw.visitEnd();
+
+        Path inJar = tmp.resolve("in.jar");
+        try (var os = Files.newOutputStream(inJar); JarOutputStream jos = new JarOutputStream(os, new Manifest())) {
+            jos.putNextEntry(new JarEntry("crazy_e2e_c/Foo.class"));
+            jos.write(cw.toByteArray());
+            jos.closeEntry();
+        }
+
+        Path outJar = tmp.resolve("out.jar");
+        ObfConfig cfg = new ObfConfig();
+        cfg.rootPackages = java.util.List.of("crazy_e2e_c");
+        cfg.flattenPackages = false;
+        cfg.renameClasses = false; cfg.renameMethods = false;
+        cfg.encryptStrings = true;
+        cfg.hideStringsCondy = true;
+        cfg.seed = 4242L;
+        CrazyObfuscator.run(inJar, outJar, cfg, new java.io.PrintStream(java.io.OutputStream.nullOutputStream()));
+
+        // plaintext must be gone from the decompressed class entry
+        byte[] cls;
+        try (var jf = new java.util.jar.JarFile(outJar.toFile());
+             var is = jf.getInputStream(jf.getEntry("crazy_e2e_c/Foo.class"))) {
+            cls = is.readAllBytes();
+        }
+        String raw = new String(cls, java.nio.charset.StandardCharsets.ISO_8859_1);
+        assertFalse(raw.contains(SECRET), "condy: plaintext must be gone from the class");
+
+        try (var cl = new java.net.URLClassLoader(new java.net.URL[]{outJar.toUri().toURL()},
+                                                  EndToEndTest.class.getClassLoader())) {
+            Class<?> foo = cl.loadClass("crazy_e2e_c.Foo");
+            assertEquals(SECRET, foo.getMethod("secret").invoke(null), "condy must decode at link time");
+            assertNotNull(cl.loadClass("crazy.C"), "condy bootstrap class must be injected");
+        }
+    }
+
+    /**
+     * Anti-decompile wrap must be behaviour-neutral: the opaque rethrow handler
+     * neither changes a normal return nor swallows a thrown exception.
+     */
+    @Test
+    void antiDecompileIsBehaviorNeutral(@org.junit.jupiter.api.io.TempDir Path tmp) throws Exception {
+        ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, "crazy_e2e_a/Foo", null, "java/lang/Object", null);
+        var ctor = cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+        ctor.visitVarInsn(Opcodes.ALOAD, 0);
+        ctor.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        ctor.visitInsn(Opcodes.RETURN); ctor.visitMaxs(0, 0);
+
+        // static int calc(int a,int b){ int s=a+b; s*=2; s-=a; if(s>0) return s; return -s; }
+        var calc = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "calc", "(II)I", null, null);
+        org.objectweb.asm.Label neg = new org.objectweb.asm.Label();
+        calc.visitVarInsn(Opcodes.ILOAD, 0);
+        calc.visitVarInsn(Opcodes.ILOAD, 1);
+        calc.visitInsn(Opcodes.IADD);
+        calc.visitVarInsn(Opcodes.ISTORE, 2);
+        calc.visitVarInsn(Opcodes.ILOAD, 2);
+        calc.visitInsn(Opcodes.ICONST_2);
+        calc.visitInsn(Opcodes.IMUL);
+        calc.visitVarInsn(Opcodes.ISTORE, 2);
+        calc.visitVarInsn(Opcodes.ILOAD, 2);
+        calc.visitVarInsn(Opcodes.ILOAD, 0);
+        calc.visitInsn(Opcodes.ISUB);
+        calc.visitVarInsn(Opcodes.ISTORE, 2);
+        calc.visitVarInsn(Opcodes.ILOAD, 2);
+        calc.visitJumpInsn(Opcodes.IFLE, neg);
+        calc.visitVarInsn(Opcodes.ILOAD, 2);
+        calc.visitInsn(Opcodes.IRETURN);
+        calc.visitLabel(neg);
+        calc.visitVarInsn(Opcodes.ILOAD, 2);
+        calc.visitInsn(Opcodes.INEG);
+        calc.visitInsn(Opcodes.IRETURN);
+        calc.visitMaxs(0, 0);
+
+        // static int boom(){ throw new IllegalStateException("x"); } (6 insns incl. dup/ldc)
+        var boom = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "boom", "()I", null, null);
+        boom.visitTypeInsn(Opcodes.NEW, "java/lang/IllegalStateException");
+        boom.visitInsn(Opcodes.DUP);
+        boom.visitLdcInsn("x");
+        boom.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/IllegalStateException", "<init>",
+            "(Ljava/lang/String;)V", false);
+        boom.visitInsn(Opcodes.ATHROW);
+        boom.visitMaxs(0, 0);
+        cw.visitEnd();
+
+        Path inJar = tmp.resolve("in.jar");
+        try (var os = Files.newOutputStream(inJar); JarOutputStream jos = new JarOutputStream(os, new Manifest())) {
+            jos.putNextEntry(new JarEntry("crazy_e2e_a/Foo.class"));
+            jos.write(cw.toByteArray());
+            jos.closeEntry();
+        }
+
+        Path outJar = tmp.resolve("out.jar");
+        ObfConfig cfg = new ObfConfig();
+        cfg.rootPackages = java.util.List.of("crazy_e2e_a");
+        cfg.flattenPackages = false;
+        cfg.renameClasses = false; cfg.renameMethods = false;
+        cfg.antiDecompile = true;
+        cfg.antiDecompileChance = 100;
+        cfg.seed = 5L;
+        CrazyObfuscator.run(inJar, outJar, cfg, new java.io.PrintStream(java.io.OutputStream.nullOutputStream()));
+
+        try (var cl = new java.net.URLClassLoader(new java.net.URL[]{outJar.toUri().toURL()},
+                                                  EndToEndTest.class.getClassLoader())) {
+            Class<?> foo = cl.loadClass("crazy_e2e_a.Foo");
+            var calcM = foo.getMethod("calc", int.class, int.class);
+            assertEquals(13, (int) (Integer) calcM.invoke(null, 3, 5), "calc(3,5): ((3+5)*2)-3=13");
+            assertEquals(3,  (int) (Integer) calcM.invoke(null, 1, 1), "calc(1,1): ((1+1)*2)-1=3");
+            assertEquals(5,  (int) (Integer) calcM.invoke(null, -5, 0), "calc(-5,0): s=-5<=0 -> -s=5");
+            // exception must still propagate (handler rethrows, doesn't swallow)
+            var boomM = foo.getMethod("boom");
+            var ex = assertThrows(java.lang.reflect.InvocationTargetException.class, () -> boomM.invoke(null));
+            assertInstanceOf(IllegalStateException.class, ex.getCause(), "thrown exception must propagate unchanged");
+        }
+    }
+
+    /**
      * Control-flow flattening must preserve semantics. sum(n) = n*(n+1)/2 via
      * a loop with a back-edge + conditional — exactly the structure flattening
      * rewrites into a dispatcher. If the dispatcher/state wiring is wrong the

@@ -47,6 +47,8 @@ public final class ObfuscatorGui {
     private final JCheckBox cFlat   = cb("Flatten control flow (experimental — may break some mods)", false);
     private final JCheckBox cKt     = cb("Rewrite Kotlin metadata (Kotlin / Fabric mods)", true);
     private final JCheckBox cIndy   = cb("Hide references (invokedynamic)", false);
+    private final JCheckBox cCondy  = cb("Hide strings via condy (CONSTANT_Dynamic)", false);
+    private final JCheckBox cAnti   = cb("Anti-decompile (confuse CFR/Vineflower; behavior-neutral)", false);
     private final JCheckBox cJunk   = cb("Inject junk + watermark", true);
     private final JCheckBox cStrip  = cb("Strip debug metadata", true);
 
@@ -87,7 +89,7 @@ public final class ObfuscatorGui {
 
         // options
         JPanel opts = new JPanel(new GridLayout(0, 2, 4, 2));
-        for (JCheckBox c : new JCheckBox[]{cName, cStr, cNum, cFlow, cFlat, cKt, cIndy, cJunk, cStrip}) opts.add(c);
+        for (JCheckBox c : new JCheckBox[]{cName, cStr, cNum, cFlow, cFlat, cKt, cIndy, cCondy, cAnti, cJunk, cStrip}) opts.add(c);
         opts.setBorder(new TitledBorder("Passes"));
 
         // log
@@ -231,6 +233,8 @@ public final class ObfuscatorGui {
         cfg.flattenControlFlow = cFlat.isSelected();
         cfg.rewriteKotlinMetadata = cKt.isSelected();
         cfg.hideReferences = cIndy.isSelected();
+        cfg.hideStringsCondy = cCondy.isSelected();
+        cfg.antiDecompile = cAnti.isSelected();
         cfg.injectJunk = cJunk.isSelected();
         cfg.stripMetadata = cStrip.isSelected();
         if (cJunk.isSelected()) cfg.watermark = "gui-build";

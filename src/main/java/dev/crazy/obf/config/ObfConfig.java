@@ -64,6 +64,31 @@ public final class ObfConfig {
     /** Chance (0-100) that an eligible method gets flattened. */
     public int flattenChance = 40;
 
+    /**
+     * Decompiler-confusion pass. Wraps eligible method bodies in a fake
+     * try/catch whose handler simply rethrows — behaviour-neutral (any
+     * exception that would propagate still propagates), but high-level
+     * decompilers (CFR, Vineflower, Procyon) emit garbage/incomplete output
+     * because the irreducible exception edge defeats their structuring. Does
+     * NOT hide anything from {@code javap}; pair with string/number passes for
+     * real secrecy. Opt-in. Only methods with no existing try/catch are touched.
+     */
+    public boolean antiDecompile = false;
+
+    /** Chance (0-100) that an eligible method gets the anti-decompile wrap. */
+    public int antiDecompileChance = 60;
+
+    /**
+     * Hide string literals behind {@code CONSTANT_Dynamic} (condy) instead of
+     * the inline decoder method. The {@code ldc "text"} becomes a condy whose
+     * injected bootstrap ({@code crazy/C}) materialises the real string at link
+     * time. Decompilers and {@code javap -c} show only an opaque dynamic
+     * constant — no plaintext, no obvious decoder call. Requires class-file
+     * version &ge; 55 (Java 11); older classes fall back to the inline decoder.
+     * Honours the targeted-string selection (encryptStringsExact/Matching).
+     */
+    public boolean hideStringsCondy = false;
+
     public NameGenerator.Style nameStyle = NameGenerator.Style.ALPHA;
 
     /** Fixed RNG seed for reproducible builds. 0 = random. */

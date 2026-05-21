@@ -22,6 +22,11 @@
   "flattenControlFlow": false,
   "flattenChance": 40,
 
+  "_hiding": "Opt-in extra hardening. hideStringsCondy hides string literals behind CONSTANT_Dynamic (no plaintext, no visible decoder; needs class v55+, else falls back to inline decoder). antiDecompile wraps methods in behaviour-neutral opaque handlers that confuse CFR/Vineflower (does NOT hide from javap). Test the obfuscated jar before shipping.",
+  "hideStringsCondy": false,
+  "antiDecompile": false,
+  "antiDecompileChance": 60,
+
   "stripMetadata": true,
   "rewriteKotlinMetadata": true,
 
