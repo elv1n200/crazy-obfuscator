@@ -758,6 +758,89 @@ public class EndToEndTest {
     }
 
     /**
+     * Regression for the "NoSuchMethodError: Sub.foo" crash: a call site may
+     * reference an INHERITED member via a subclass owner (INVOKEVIRTUAL/STATIC
+     * Sub.foo / GETFIELD Sub.field where the member is declared in Super and Sub
+     * does not redeclare it). The renamer must resolve those up the hierarchy so
+     * the call site matches the renamed definition.
+     */
+    @Test
+    void inheritedMemberCallSitesRemapConsistently(@org.junit.jupiter.api.io.TempDir Path tmp) throws Exception {
+        byte[] base, sub, runner;
+        {
+            ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+            cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, "ir/Base", null, "java/lang/Object", null);
+            cw.visitField(Opcodes.ACC_PUBLIC, "fld", "I", null, null).visitEnd();
+            var ctor = cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+            ctor.visitVarInsn(Opcodes.ALOAD, 0);
+            ctor.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+            ctor.visitVarInsn(Opcodes.ALOAD, 0);
+            ctor.visitIntInsn(Opcodes.BIPUSH, 11);
+            ctor.visitFieldInsn(Opcodes.PUTFIELD, "ir/Base", "fld", "I");
+            ctor.visitInsn(Opcodes.RETURN); ctor.visitMaxs(0, 0);
+            var inst = cw.visitMethod(Opcodes.ACC_PUBLIC, "inst", "()I", null, null);
+            inst.visitIntInsn(Opcodes.BIPUSH, 7); inst.visitInsn(Opcodes.IRETURN); inst.visitMaxs(0, 0);
+            var stat = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "stat", "()I", null, null);
+            stat.visitIntInsn(Opcodes.BIPUSH, 9); stat.visitInsn(Opcodes.IRETURN); stat.visitMaxs(0, 0);
+            cw.visitEnd(); base = cw.toByteArray();
+        }
+        {
+            ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+            cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, "ir/Sub", null, "ir/Base", null);  // declares nothing
+            var ctor = cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+            ctor.visitVarInsn(Opcodes.ALOAD, 0);
+            ctor.visitMethodInsn(Opcodes.INVOKESPECIAL, "ir/Base", "<init>", "()V", false);
+            ctor.visitInsn(Opcodes.RETURN); ctor.visitMaxs(0, 0);
+            cw.visitEnd(); sub = cw.toByteArray();
+        }
+        {
+            ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+            cw.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, "ir/Runner", null, "java/lang/Object", null);
+            var ctor = cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+            ctor.visitVarInsn(Opcodes.ALOAD, 0);
+            ctor.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+            ctor.visitInsn(Opcodes.RETURN); ctor.visitMaxs(0, 0);
+            var run = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "run", "()I", null, null);
+            run.visitTypeInsn(Opcodes.NEW, "ir/Sub"); run.visitInsn(Opcodes.DUP);
+            run.visitMethodInsn(Opcodes.INVOKESPECIAL, "ir/Sub", "<init>", "()V", false);
+            run.visitVarInsn(Opcodes.ASTORE, 0);
+            run.visitVarInsn(Opcodes.ALOAD, 0);
+            run.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "ir/Sub", "inst", "()I", false); // inherited instance
+            run.visitMethodInsn(Opcodes.INVOKESTATIC, "ir/Sub", "stat", "()I", false);   // inherited static
+            run.visitInsn(Opcodes.IADD);
+            run.visitTypeInsn(Opcodes.NEW, "ir/Sub"); run.visitInsn(Opcodes.DUP);
+            run.visitMethodInsn(Opcodes.INVOKESPECIAL, "ir/Sub", "<init>", "()V", false);
+            run.visitFieldInsn(Opcodes.GETFIELD, "ir/Sub", "fld", "I");                   // inherited field
+            run.visitInsn(Opcodes.IADD);
+            run.visitInsn(Opcodes.IRETURN); run.visitMaxs(0, 0);
+            cw.visitEnd(); runner = cw.toByteArray();
+        }
+
+        Path inJar = tmp.resolve("in.jar");
+        try (var os = Files.newOutputStream(inJar); JarOutputStream jos = new JarOutputStream(os, new Manifest())) {
+            for (var e : new Object[][]{{"ir/Base.class", base}, {"ir/Sub.class", sub}, {"ir/Runner.class", runner}}) {
+                jos.putNextEntry(new JarEntry((String) e[0])); jos.write((byte[]) e[1]); jos.closeEntry();
+            }
+        }
+        Path outJar = tmp.resolve("out.jar");
+        ObfConfig cfg = new ObfConfig();
+        cfg.rootPackages = java.util.List.of("ir");
+        cfg.excludeClasses = new java.util.ArrayList<>(java.util.List.of("ir/Runner"));
+        cfg.flattenPackages = false;
+        cfg.renameClasses = true; cfg.renameMethods = true; cfg.renameFields = true;
+        cfg.encryptStrings = false; cfg.obfuscateNumbers = false; cfg.obfuscateFlow = false;
+        cfg.injectJunk = false; cfg.stripMetadata = false;
+        cfg.seed = 321L;
+        CrazyObfuscator.run(inJar, outJar, cfg, new java.io.PrintStream(java.io.OutputStream.nullOutputStream()));
+
+        try (var cl = new java.net.URLClassLoader(new java.net.URL[]{outJar.toUri().toURL()},
+                                                  EndToEndTest.class.getClassLoader())) {
+            assertEquals(27, (int) (Integer) cl.loadClass("ir.Runner").getMethod("run").invoke(null),
+                "inherited inst()+stat()+fld = 7+9+11 = 27 must survive renaming");
+        }
+    }
+
+    /**
      * MBA must rewrite int +,-,^,|,& to equivalent identities and stay bit-exact
      * for every input, including negatives and overflow (Integer.MIN/MAX).
      */

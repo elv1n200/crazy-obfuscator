@@ -66,7 +66,7 @@ public final class ObfuscatorGui {
     private static JCheckBox cb(String t, boolean sel) { return new JCheckBox(t, sel); }
 
     private JFrame build() {
-        JFrame f = new JFrame("Crazy Obfuscator 0.8.0");
+        JFrame f = new JFrame("Crazy Obfuscator 0.8.1");
         f.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
 
         // header

@@ -98,12 +98,9 @@ public final class NameTransformer implements Transformer {
                     if (!fieldRenameable(cn, f, ctx)) continue;
                     String nn = ctx.names().nextField();
                     r.fields.put(Remapper.fieldKey(cn.name, f.name, f.desc), nn);
-                    // Inherited-field access sites can carry a subclass owner
-                    // (e.g. GETFIELD Sub.field for a field declared in Super).
-                    // Register the same new name under every subclass that does
-                    // NOT declare its own field of that name+desc (shadowing),
-                    // so those references remap consistently.
-                    propagateFieldRename(cn.name, f.name, f.desc, nn, ctx);
+                    // Inherited-field access sites (GETFIELD Sub.field where field
+                    // is declared in Super) are resolved up the hierarchy by
+                    // NameRemapper, so no propagation is needed here.
                 }
             }
         }
@@ -116,14 +113,13 @@ public final class NameTransformer implements Transformer {
 
     @Override
     public void apply(ObfContext ctx) {
-        Remapper r = ctx.remapper();
         // IMPORTANT: use an adapter that consults our own Remapper with the exact
         // key formats it was populated with (methodKey/fieldKey). ASM's
         // SimpleRemapper builds its lookup key as owner.name+desc for methods and
         // owner.name for fields — neither matches our keys, so with SimpleRemapper
         // method/field renames were silently dropped (only class renames applied)
         // while the mapping file still claimed them. This adapter fixes that.
-        NameRemapper sr = new NameRemapper(r);
+        NameRemapper sr = new NameRemapper(ctx);
 
         Map<String, ClassNode> newMap = new LinkedHashMap<>();
         for (ClassNode original : new ArrayList<>(ctx.contents().classes().values())) {
@@ -162,14 +158,29 @@ public final class NameTransformer implements Transformer {
      * flow through here, so a renamed member is renamed consistently everywhere.
      */
     private static final class NameRemapper extends org.objectweb.asm.commons.Remapper {
+        private final ObfContext ctx;
         private final Remapper r;
-        NameRemapper(Remapper r) { this.r = r; }
+        private final Map<String, java.util.Set<String>> superCache = new HashMap<>();
+        NameRemapper(ObfContext ctx) { this.ctx = ctx; this.r = ctx.remapper(); }
 
         @Override public String map(String internalName) { return r.mapClass(internalName); }
 
         @Override public String mapMethodName(String owner, String name, String descriptor) {
             if (!name.isEmpty() && name.charAt(0) == '<') return name; // <init>/<clinit>
-            return r.mapMethod(owner, name, descriptor);
+            // Direct hit: this owner declares the (renamed) member.
+            String v = r.methods.get(Remapper.methodKey(owner, name, descriptor));
+            if (v != null) return v;
+            // Inherited call site: owner references a method declared in a
+            // supertype (e.g. INVOKEVIRTUAL Sub.foo where foo lives in Super).
+            // Resolve up the ORIGINAL hierarchy so the call remaps to match the
+            // renamed definition. All declarations of one signature reachable
+            // here share a single new name (see the grouping), so the first hit
+            // is unambiguous.
+            for (String sup : supers(owner)) {
+                v = r.methods.get(Remapper.methodKey(sup, name, descriptor));
+                if (v != null) return v;
+            }
+            return name;
         }
 
         @Override public String mapInvokeDynamicMethodName(String name, String descriptor) {
@@ -177,16 +188,25 @@ public final class NameTransformer implements Transformer {
         }
 
         @Override public String mapFieldName(String owner, String name, String descriptor) {
-            return r.mapField(owner, name, descriptor);
+            String v = r.fields.get(Remapper.fieldKey(owner, name, descriptor));
+            if (v != null) return v;
+            for (String sup : supers(owner)) {          // inherited field access
+                v = r.fields.get(Remapper.fieldKey(sup, name, descriptor));
+                if (v != null) return v;
+            }
+            return name;
         }
 
         @Override public String mapRecordComponentName(String owner, String name, String descriptor) {
-            // keep a record's component name in lockstep with its backing field
-            return r.mapField(owner, name, descriptor);
+            return mapFieldName(owner, name, descriptor); // stay in lockstep with the backing field
         }
 
         @Override public String mapAnnotationAttributeName(String descriptor, String name) {
             return name; // annotation element names are part of the annotation's API
+        }
+
+        private java.util.Set<String> supers(String owner) {
+            return superCache.computeIfAbsent(owner, o -> ctx.hierarchy().allSupers(o));
         }
     }
 
@@ -227,17 +247,27 @@ public final class NameTransformer implements Transformer {
                 nodeMethod.put(key, m);
             }
         }
-        // Link each declared instance method to the same name+desc method
-        // declared in any of its supertypes that live in our jar.
+        // Link every declaration of a signature that could resolve to the same
+        // slot at some class: for each class, union all same-name+desc
+        // declarations found across itself and its in-jar supertypes. This
+        // catches plain overrides AND the diamond where a subclass inherits the
+        // same signature from two unrelated in-jar supertypes (so the whole set
+        // still gets ONE name — otherwise virtual dispatch would break).
         for (ClassNode cn : ctx.contents().classes().values()) {
-            if (cn.methods == null) continue;
-            for (MethodNode m : cn.methods) {
-                if (m.name.charAt(0) == '<' || (m.access & Opcodes.ACC_STATIC) != 0) continue;
-                String childKey = Remapper.methodKey(cn.name, m.name, m.desc);
-                for (String sup : ctx.hierarchy().allSupers(cn.name)) {
-                    if (!ourClasses.contains(sup)) continue;
-                    String supKey = Remapper.methodKey(sup, m.name, m.desc);
-                    if (parent.containsKey(supKey)) union(parent, childKey, supKey);
+            Map<String, String> firstBySig = new HashMap<>();
+            java.util.List<String> types = new ArrayList<>();
+            types.add(cn.name);
+            for (String sup : ctx.hierarchy().allSupers(cn.name)) if (ourClasses.contains(sup)) types.add(sup);
+            for (String t : types) {
+                ClassNode tc = ctx.contents().classes().get(t);
+                if (tc == null || tc.methods == null) continue;
+                for (MethodNode m : tc.methods) {
+                    if (m.name.charAt(0) == '<' || (m.access & Opcodes.ACC_STATIC) != 0) continue;
+                    String key = Remapper.methodKey(t, m.name, m.desc);
+                    if (!parent.containsKey(key)) continue;      // only real nodes
+                    String sig = m.name + " " + m.desc;
+                    String prev = firstBySig.putIfAbsent(sig, key);
+                    if (prev != null) union(parent, prev, key);
                 }
             }
         }
@@ -276,7 +306,8 @@ public final class NameTransformer implements Transformer {
                 if (ctx.remapper().methods.containsKey(key)) continue;
                 String nn = ctx.names().nextMethod();
                 ctx.remapper().methods.put(key, nn);
-                propagateStaticRename(cn.name, m.name, m.desc, nn, ctx);
+                // inherited static call sites (INVOKESTATIC Sub.foo) are resolved
+                // up the hierarchy by NameRemapper, so no propagation needed.
             }
         }
     }
@@ -291,45 +322,6 @@ public final class NameTransformer implements Transformer {
         return false;
     }
 
-    /** Copy a static-method rename to subclasses that inherit it (do not declare
-     *  their own same name+desc), so inherited-access call sites remap too. */
-    private void propagateStaticRename(String root, String name, String desc, String newName, ObfContext ctx) {
-        Set<String> subs = ctx.hierarchy().subclasses.get(root);
-        if (subs == null) return;
-        for (String sub : subs) {
-            ClassNode subCn = ctx.contents().classes().get(sub);
-            boolean declaresOwn = false;
-            if (subCn != null && subCn.methods != null) {
-                for (MethodNode m : subCn.methods) {
-                    if (m.name.equals(name) && m.desc.equals(desc)) { declaresOwn = true; break; }
-                }
-            }
-            if (!declaresOwn) {
-                ctx.remapper().methods.putIfAbsent(Remapper.methodKey(sub, name, desc), newName);
-                propagateStaticRename(sub, name, desc, newName, ctx);
-            }
-        }
-    }
-
-    /** Copy a field rename to subclasses that inherit it (do not shadow it), so
-     *  inherited-access sites carrying a subclass owner remap consistently. */
-    private void propagateFieldRename(String root, String name, String desc, String newName, ObfContext ctx) {
-        Set<String> subs = ctx.hierarchy().subclasses.get(root);
-        if (subs == null) return;
-        for (String sub : subs) {
-            ClassNode subCn = ctx.contents().classes().get(sub);
-            boolean shadows = false;
-            if (subCn != null && subCn.fields != null) {
-                for (FieldNode f : subCn.fields) {
-                    if (f.name.equals(name) && f.desc.equals(desc)) { shadows = true; break; }
-                }
-            }
-            if (!shadows) {
-                ctx.remapper().fields.putIfAbsent(Remapper.fieldKey(sub, name, desc), newName);
-                propagateFieldRename(sub, name, desc, newName, ctx);
-            }
-        }
-    }
 
     // ---- union-find helpers (over method-key strings) ---------------------
 
