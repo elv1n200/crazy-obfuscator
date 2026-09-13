@@ -32,8 +32,10 @@ public final class Pipeline {
                                   p.add(new ResourceEncryptionTransformer());
         if (cfg.encryptStrings)   p.add(new StringEncryptionTransformer());
         if (cfg.obfuscateNumbers) p.add(new NumberTransformer());
+        if (cfg.mbaArithmetic)    p.add(new MbaTransformer(log));
         if (cfg.obfuscateFlow)    p.add(new FlowTransformer());
         if (cfg.flattenControlFlow) p.add(new ControlFlowFlattenTransformer(log));
+        if (cfg.opaquePredicates) p.add(new OpaquePredicateTransformer(log));
         if (cfg.antiDecompile)    p.add(new AntiDecompileTransformer(log));
         if (cfg.injectJunk)       p.add(new JunkCodeTransformer());
         // Name transform must come AFTER everything that injects helpers
@@ -52,6 +54,15 @@ public final class Pipeline {
         if (cfg.watermark != null) p.add(new WatermarkTransformer());
         if (cfg.stripMetadata)    p.add(new MetadataStripTransformer());
         if (cfg.hideReferences)   p.add(new ReferenceHidingTransformer(log));
+        if (cfg.hideFields)       p.add(new FieldHidingTransformer(log));
+        if (cfg.hideNumbersCondy) p.add(new NumberCondyTransformer(log));
+        // Byte injection near-LAST: custom attributes survive ClassRemapper, but by
+        // running after every structural pass (including refhide's helper
+        // injection) nothing downstream can drop the junk attributes.
+        if (cfg.injectJunkAttributes) p.add(new JunkByteInjectionTransformer(log));
+        // Anti-tamper is TRULY last: it CRC's the final bytes of every class, so
+        // no pass may modify a protected class after it runs.
+        if (cfg.antiTamper)       p.add(new AntiTamperTransformer(log));
         return p;
     }
 }

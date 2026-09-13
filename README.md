@@ -10,6 +10,36 @@ persistence intact.
 > Always keep the mapping file for every release so you can de-obfuscate
 > crash reports.
 
+## What's new in 0.8.0
+
+- **Method & field renaming now actually applies.** Earlier versions planned
+  member renames and wrote them to the mapping file, but an ASM `SimpleRemapper`
+  key-format mismatch meant only *class* names were rewritten in the bytecode —
+  method/field renames were silently dropped and the mapping file over-reported
+  them. This is fixed: renames are applied through a correct remapper adapter,
+  override chains (interface + `super` + inheritance) share one name and lock
+  all-or-nothing, statics and inherited fields propagate to call sites, and the
+  mapping file now matches the bytecode. **If you upgrade an existing config,
+  member renaming is now genuinely active — re-test your mod** (a reflection
+  pattern the scanners miss can now surface; add an `excludeClasses`/
+  `excludeMembers` entry if a feature misbehaves).
+- **Byte injection** — junk class-file attributes the JVM ignores (see the
+  feature table). Config `injectJunkAttributes` / `--junk-attributes`.
+- **Field hiding** — invokedynamic hiding of field reads/writes, the data-flow
+  companion to reference hiding. Config `hideFields` / `--hide-fields`.
+- **MBA arithmetic** — rewrites int **and long** operations as polymorphic
+  Mixed Boolean-Arithmetic identities. Config `mbaArithmetic` / `--mba`.
+- **Numeric condy** — hides int/long constants behind `CONSTANT_Dynamic`.
+  Config `hideNumbersCondy` / `--hide-numbers-condy`.
+- **Opaque predicates** — argument-driven always-true guards. Config
+  `opaquePredicates` / `--opaque-predicates`.
+- **Anti-tamper** — runtime CRC self-check (`crazy/IT`). Config `antiTamper` /
+  `--anti-tamper`. Opt-in, **not** in `--crazy` (incompatible with Java agents).
+- **Crazy mode** — `--crazy` (or the GUI toggle) enables the whole aggressive
+  stack at max settings. See [Crazy mode](#crazy-mode-).
+- **`--hide-references`** CLI flag for invokedynamic reference hiding (was
+  previously only reachable via config/GUI).
+
 ## Download
 
 Prebuilt Windows app on the [Releases page](../../releases) — `.msi`
@@ -29,15 +59,22 @@ license — don't redistribute obfuscated builds of other people's mods.
 | **Name obfuscation** | Renames classes, methods and fields. Nested classes keep their `Outer$Inner` structure so generic signatures stay valid. Inheritance-aware method grouping. |
 | **String encryption** | Per-class polymorphic decoder; nonlinear keyed LCG + xorshift keystream (not recoverable from known plaintext). Random per-class constants and decoder name. |
 | **Number obfuscation** | Replaces int/long constants with arithmetic identities. |
+| **MBA arithmetic** (opt-in) | Rewrites `int` **and `long`** `+ - ^ | &` *operations* as algebraically-equivalent Mixed Boolean-Arithmetic identities (e.g. `a+b → (a^b)+((a&b)<<1)`), bit-for-bit exact under two's-complement overflow, and **polymorphic** — a random identity per site, so no fixed pattern to de-MBA. Operands are spilled to fresh locals; the rewrite is straight-line and non-throwing (safe inside `try`). |
+| **Numeric condy** (opt-in) | Hides `int`/`long` `ldc` constants behind `CONSTANT_Dynamic` resolved by an injected bootstrap (`crazy/NC`): a decompiler / `javap -c` shows an opaque dynamic constant instead of your magic number (key, threshold, …). Composes with number + MBA obfuscation. Requires class v55+ (Java 11); older classes are skipped. Resolved once → steady-state cost nil. |
+| **Opaque predicates** (opt-in) | Guards method bodies with a predicate provably true for every value of one of the method's own `int` arguments (`(x|1)!=0`, `(x&~x)==0`, `(x*(x+1)&1)==0`) — argument-dependent, so it can't be constant-folded like a field guard. The impossible branch is a dead `ACONST_NULL; ATHROW`. |
 | **Control-flow** | Opaque-predicate guards (`flowLevel` 1); level 2 adds polymorphic guards + scattered GOTO chains. |
 | **Flatten** (experimental) | Opt-in dispatcher-loop flattening. Sound subset only: skips try/catch, monitors, switches, and methods with written *reference* locals (Kotlin capture cells / `$default` synthetics make those verifier-unsafe). Off by default — **test the obfuscated jar before shipping**. Full reference-local coverage needs a typed-SSA pass and is a deliberate non-goal. |
 | **Condy string hiding** (opt-in) | Replaces `ldc "text"` with a `CONSTANT_Dynamic` resolved by an injected bootstrap (`crazy/C`) at link time. No plaintext and no visible decoder call — opaque to `javap -c` and decompilers. Requires class-file v55+ (Java 11); older classes fall back to the inline decoder. Honours targeted-string selection. |
 | **Anti-decompile** (opt-in) | Decompiler-confusion pass. Wraps eligible methods (no existing try/catch) in a fake `catch (Throwable) { throw t; }` whose handler is appended at method end. Behaviour-neutral — any exception still propagates with the same trace — but the irreducible exception edge makes CFR/Vineflower/Procyon emit garbage or bail. **Does not hide anything from `javap`**; pair with string/number passes for real secrecy. |
+| **Reference hiding** (opt-in) | Routes eligible internal calls (INVOKESTATIC/VIRTUAL/INTERFACE to your own public methods) through `invokedynamic` bound to a self-decrypting bootstrap (`crazy/Indy`). The decompiler sees an opaque dynamic call site instead of `owner.method`, so the internal call graph disappears; the bootstrap resolves once, so steady-state cost is nil. |
+| **Field hiding** (opt-in) | The data-flow analogue: routes `GET/PUT FIELD/STATIC` on your own fields through `invokedynamic` bound to a self-decrypting bootstrap (`crazy/FIndy`), so the read/write graph over your fields disappears too. Conservative — only fields declared in your classes, accessible from the call site (self/public), non-`volatile`, non-`final` (for writes), and never inside constructors. Resolved once → steady-state cost nil. |
+| **Byte injection** (opt-in) | Writes junk class-file attributes (custom `attribute_info` blobs with decoy names — `Scala`/`TASTY`/…) into classes, methods and fields. The JVM *silently ignores* unknown attributes (JVMS §4.7.1), so nothing changes at runtime, but raw-byte signature/fingerprint scanners no longer match across builds and naive attribute parsers trip on the decoys. **Does not hide anything from a structured decompiler** (they skip unknown attributes by length). |
 | **Junk code** | Injects unreachable synthetic methods (collision-safe `CRAZY$j` names). |
 | **Metadata stripping** | Removes `SourceFile`, line numbers, local-variable tables, parameter names. |
 | **Watermarking** | Embeds a build tag + `META-INF/crazy-build.txt` for leak tracing. |
 | **Resource encryption** | XOR-encrypts selected jar resources with an injected runtime helper. |
 | **Anti-debug** (opt-in) | Injects a JDWP/agent-detection check. |
+| **Anti-tamper** (opt-in) | Bakes each protected class's CRC32 into an injected verifier (`crazy/IT`) and re-checks it at load (via `<clinit>`); throws if a class was edited. Raises the bar against jar-patching (license/feature-gate removal). **Not a security boundary**, and **incompatible with Java agents / load-time bytecode transformers** (it reads the class *resource*, so Fabric/Mixin define-time transforms don't trip it, but any real agent that rewrites bytes will) — so it's **deliberately excluded from `--crazy`**. |
 | **Mapping export** | Proguard-format mapping for crash-report de-obfuscation. |
 
 ### Kotlin support
@@ -88,7 +125,30 @@ java -jar crazy-obfuscator-all.jar input.jar output.jar \
 
 Flags mirror the config (`--no-strings`, `--flow-level 2`,
 `--rewrite-kotlin-metadata`, `--watermark`, `--seed`, `--encrypt-resource`,
-…). See `example.json` for every option; CLI flags override the file.
+`--hide-references`, `--hide-fields`, `--junk-attributes`, `--mba`,
+`--hide-numbers-condy`, `--opaque-predicates`, `--anti-tamper`, …). See
+`example.json` for every option; CLI flags override the file.
+
+### Crazy mode 🔥
+
+One switch turns on the whole aggressive-but-sound stack at max settings —
+name obfuscation, condy string **and** number hiding, number + int/long MBA
+obfuscation, argument-driven opaque predicates, `flowLevel 2`, control-flow
+flattening, anti-decompile, invokedynamic reference **and** field hiding, byte
+injection, junk, metadata stripping and a watermark (anti-tamper stays opt-in —
+add `--anti-tamper`):
+
+```bash
+java -jar crazy-obfuscator-all.jar input.jar output.jar \
+     --root-package com.example.mymod --crazy --mapping mapping.txt
+```
+
+Every pass `--crazy` enables is individually verified to keep the class
+loadable and behaviour-identical, and the end-to-end test suite runs them all
+stacked together. Individual flags still override it, so
+`--crazy --no-flow` is a valid, coherent combo. In the GUI, tick
+**🔥 CRAZY MODE**. As always: keep the mapping file, and test the obfuscated
+jar before shipping.
 
 ### Verify
 

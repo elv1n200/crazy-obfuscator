@@ -47,10 +47,17 @@ public final class ObfuscatorGui {
     private final JCheckBox cFlat   = cb("Flatten control flow (experimental — may break some mods)", false);
     private final JCheckBox cKt     = cb("Rewrite Kotlin metadata (Kotlin / Fabric mods)", true);
     private final JCheckBox cIndy   = cb("Hide references (invokedynamic)", false);
+    private final JCheckBox cFindy  = cb("Hide field access (invokedynamic)", false);
     private final JCheckBox cCondy  = cb("Hide strings via condy (CONSTANT_Dynamic)", false);
     private final JCheckBox cAnti   = cb("Anti-decompile (confuse CFR/Vineflower; behavior-neutral)", false);
+    private final JCheckBox cMba    = cb("MBA arithmetic (rewrite int/long ops)", false);
+    private final JCheckBox cNumC   = cb("Hide numbers via condy (CONSTANT_Dynamic)", false);
+    private final JCheckBox cOpaque = cb("Opaque predicates (argument-driven)", false);
+    private final JCheckBox cByte   = cb("Byte injection (junk class-file attributes)", false);
+    private final JCheckBox cTamper = cb("Anti-tamper (runtime CRC self-check; not for Java agents)", false);
     private final JCheckBox cJunk   = cb("Inject junk + watermark", true);
     private final JCheckBox cStrip  = cb("Strip debug metadata", true);
+    private final JCheckBox cCrazy  = cb("🔥 CRAZY MODE — everything, max settings", false);
 
     private final JTextArea logArea = new JTextArea(15, 70);
     private final JButton run = new JButton("Obfuscate");
@@ -59,7 +66,7 @@ public final class ObfuscatorGui {
     private static JCheckBox cb(String t, boolean sel) { return new JCheckBox(t, sel); }
 
     private JFrame build() {
-        JFrame f = new JFrame("Crazy Obfuscator 0.6.0");
+        JFrame f = new JFrame("Crazy Obfuscator 0.8.0");
         f.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
 
         // header
@@ -89,8 +96,19 @@ public final class ObfuscatorGui {
 
         // options
         JPanel opts = new JPanel(new GridLayout(0, 2, 4, 2));
-        for (JCheckBox c : new JCheckBox[]{cName, cStr, cNum, cFlow, cFlat, cKt, cIndy, cCondy, cAnti, cJunk, cStrip}) opts.add(c);
+        for (JCheckBox c : new JCheckBox[]{cName, cStr, cNum, cNumC, cFlow, cFlat, cKt, cIndy, cFindy, cCondy, cAnti, cMba, cOpaque, cByte, cTamper, cJunk, cStrip}) opts.add(c);
         opts.setBorder(new TitledBorder("Passes"));
+
+        // Crazy mode: ticks the whole aggressive stack for visual feedback and
+        // then forces it on at build time (see buildConfig). Unticking it leaves
+        // the boxes where they are so you can fine-tune down from max.
+        cCrazy.setFont(cCrazy.getFont().deriveFont(Font.BOLD));
+        cCrazy.addActionListener(e -> {
+            if (!cCrazy.isSelected()) return;
+            for (JCheckBox c : new JCheckBox[]{cName, cStr, cNum, cNumC, cFlow, cFlat, cIndy, cFindy, cCondy, cAnti, cMba, cOpaque, cByte, cJunk, cStrip})
+                c.setSelected(true); // note: anti-tamper (cTamper) is intentionally left out of the preset
+        });
+        opts.add(cCrazy);
 
         // log
         logArea.setEditable(false);
@@ -233,11 +251,21 @@ public final class ObfuscatorGui {
         cfg.flattenControlFlow = cFlat.isSelected();
         cfg.rewriteKotlinMetadata = cKt.isSelected();
         cfg.hideReferences = cIndy.isSelected();
+        cfg.hideFields = cFindy.isSelected();
         cfg.hideStringsCondy = cCondy.isSelected();
         cfg.antiDecompile = cAnti.isSelected();
+        cfg.mbaArithmetic = cMba.isSelected();
+        cfg.hideNumbersCondy = cNumC.isSelected();
+        cfg.opaquePredicates = cOpaque.isSelected();
+        cfg.antiTamper = cTamper.isSelected();
+        cfg.injectJunkAttributes = cByte.isSelected();
         cfg.injectJunk = cJunk.isSelected();
         cfg.stripMetadata = cStrip.isSelected();
         if (cJunk.isSelected()) cfg.watermark = "gui-build";
+        // Crazy mode forces the whole aggressive stack at max, overriding the
+        // individual boxes above (keep flattenPackages=false — see note above —
+        // which applyCrazyPreset would otherwise set, so re-pin it after).
+        if (cCrazy.isSelected()) { cfg.applyCrazyPreset(); cfg.flattenPackages = false; }
         String mp = mapping.getText().trim();
         if (!mp.isEmpty()) cfg.mappingOutput = mp;
 

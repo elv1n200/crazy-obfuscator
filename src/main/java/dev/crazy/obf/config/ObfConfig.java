@@ -37,6 +37,16 @@ public final class ObfConfig {
     public boolean stripMetadata = true;
     public boolean hideReferences = false;
 
+    /**
+     * Hide field access (GET/PUT FIELD/STATIC) behind invokedynamic bound to an
+     * injected self-decrypting bootstrap ({@code crazy/FIndy}), so the read/write
+     * graph over your own fields disappears from decompiled output. Conservative:
+     * only fields declared in your own classes, accessible from the call site
+     * (self or public), non-volatile, and (for writes) non-final; never inside
+     * constructors. Steady-state cost is nil (resolved once). Opt-in.
+     */
+    public boolean hideFields = false;
+
     /** How aggressive the flow pass is. 0 = off, 1 = light, 2 = medium. >2 not currently used. */
     public int flowLevel = 1;
 
@@ -57,6 +67,44 @@ public final class ObfConfig {
 
     /** Chance (0-100) that a given number constant gets transformed. */
     public int numberObfuscationChance = 70;
+
+    /**
+     * Mixed Boolean-Arithmetic: replace int +,-,^,|,& operations with
+     * algebraically-equivalent bit/arith identities (bit-for-bit identical under
+     * two's-complement). Hides the arithmetic itself, not just constants. Opt-in.
+     */
+    public boolean mbaArithmetic = false;
+
+    /** Chance (0-100) that an eligible int op gets the MBA rewrite. */
+    public int mbaChance = 50;
+
+    /**
+     * Hide int/long {@code LDC} constants behind {@code CONSTANT_Dynamic} (condy)
+     * resolved by an injected bootstrap ({@code crazy/NC}) — a decompiler sees an
+     * opaque dynamic constant instead of the literal. Requires class v55+ (Java
+     * 11); older classes are skipped. Opt-in.
+     */
+    public boolean hideNumbersCondy = false;
+
+    /**
+     * Argument-driven opaque predicates: guard method bodies with a predicate
+     * that is provably true for every value of one of the method's own int
+     * arguments (e.g. {@code (x|1)!=0}), so it can't be constant-folded like a
+     * field guard. The impossible branch is dead. Opt-in.
+     */
+    public boolean opaquePredicates = false;
+
+    /** Chance (0-100) that an eligible method gets an opaque predicate. */
+    public int opaquePredicateChance = 50;
+
+    /**
+     * Runtime self-integrity check: bake each protected class's CRC32 into an
+     * injected verifier ({@code crazy/IT}) and re-check at load; throw if a class
+     * was edited. Raises the bar against jar-patching. NOT a security boundary,
+     * and incompatible with load-time bytecode transformers (Java agents) — so it
+     * is deliberately excluded from the {@code --crazy} preset. Opt-in.
+     */
+    public boolean antiTamper = false;
 
     /** Control-flow flattening (dispatcher loop). Off by default — heaviest pass. */
     public boolean flattenControlFlow = false;
@@ -88,6 +136,19 @@ public final class ObfConfig {
      * Honours the targeted-string selection (encryptStringsExact/Matching).
      */
     public boolean hideStringsCondy = false;
+
+    /**
+     * Byte injection — write raw junk class-file attributes into classes,
+     * methods and fields. The JVM silently ignores unknown attributes
+     * (JVMS §4.7.1), so this never affects execution, but it defeats raw-byte
+     * signature/fingerprint scanners and trips naive attribute parsers. The
+     * decoy names impersonate real toolchain attributes to waste reverser time.
+     * Does NOT hide anything from a structured decompiler. Opt-in.
+     */
+    public boolean injectJunkAttributes = false;
+
+    /** Chance (0-100) that an eligible method/field gets a junk attribute. */
+    public int junkAttributeChance = 60;
 
     public NameGenerator.Style nameStyle = NameGenerator.Style.ALPHA;
 
@@ -125,6 +186,58 @@ public final class ObfConfig {
      * against stale names. Leave on for any Kotlin (e.g. Fabric) mod.
      */
     public boolean rewriteKotlinMetadata = false;
+
+    /**
+     * "Crazy mode" — the whole aggressive-but-sound stack at maximum settings,
+     * in one call. Every pass it enables is individually verified to keep the
+     * class loadable and behaviour-identical; stacking them is covered by the
+     * end-to-end "everything on" test.
+     *
+     * <p>Deliberately left untouched: {@link #rewriteKotlinMetadata} (only
+     * meaningful for Kotlin — keep the caller's value), {@link #rootPackages}
+     * and the exclusion lists (scope is the user's decision), and {@link #seed}.
+     * Renaming still only ever touches classes inside {@code rootPackages}.
+     *
+     * @return {@code this}, for chaining.
+     */
+    public ObfConfig applyCrazyPreset() {
+        renameClasses = renameMethods = renameFields = true;
+        flattenPackages = true;
+
+        encryptStrings = true;
+        stringEncryptionChance = 100;
+        hideStringsCondy = true;
+
+        obfuscateNumbers = true;
+        numberObfuscationChance = 100;
+
+        mbaArithmetic = true;
+        mbaChance = 60;
+        hideNumbersCondy = true;
+
+        opaquePredicates = true;
+        opaquePredicateChance = 60;
+
+        obfuscateFlow = true;
+        flowLevel = 2;
+
+        flattenControlFlow = true;
+        flattenChance = 60;
+
+        antiDecompile = true;
+        antiDecompileChance = 100;
+
+        hideReferences = true;
+        hideFields = true;
+
+        injectJunk = true;
+        injectJunkAttributes = true;
+        junkAttributeChance = 60;
+
+        stripMetadata = true;
+        if (watermark == null || watermark.isBlank()) watermark = "crazy";
+        return this;
+    }
 
     public static ObfConfig load(Path p) throws IOException {
         if (p == null || !Files.exists(p)) return new ObfConfig();
