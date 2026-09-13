@@ -5,6 +5,7 @@ import dev.crazy.obf.model.ObfContext;
 import dev.crazy.obf.model.Remapper;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
 import org.objectweb.asm.commons.ClassRemapper;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldNode;
@@ -184,7 +185,26 @@ public final class NameTransformer implements Transformer {
         }
 
         @Override public String mapInvokeDynamicMethodName(String name, String descriptor) {
-            return name; // indy call-site names are synthetic; leave untouched
+            // A lambda / SAM-conversion call site (LambdaMetafactory) uses the
+            // functional-interface METHOD NAME as the invokedynamic name, and the
+            // indy's return type is that interface. If we renamed the SAM, the
+            // generated lambda must use the new name or it won't implement the
+            // renamed interface -> AbstractMethodError at first use. Resolve the
+            // renamed SAM by (return-type interface + name), walking supertypes.
+            // NB: ASM also routes CONSTANT_Dynamic constants (our condy string /
+            // numeric hiding) through here, whose descriptor is a TYPE descriptor
+            // (e.g. "Ljava/lang/String;", "I"), not a method one — skip those.
+            if (descriptor.isEmpty() || descriptor.charAt(0) != '(') return name;
+            Type ret = Type.getReturnType(descriptor);
+            if (ret.getSort() != Type.OBJECT) return name;
+            String iface = ret.getInternalName();
+            String nn = sam(iface, name);
+            if (nn != null) return nn;
+            for (String sup : supers(iface)) {
+                nn = sam(sup, name);
+                if (nn != null) return nn;
+            }
+            return name;
         }
 
         @Override public String mapFieldName(String owner, String name, String descriptor) {
@@ -207,6 +227,29 @@ public final class NameTransformer implements Transformer {
 
         private java.util.Set<String> supers(String owner) {
             return superCache.computeIfAbsent(owner, o -> ctx.hierarchy().allSupers(o));
+        }
+
+        /** owner+name -> single renamed method name (a SAM is the only abstract
+         *  method of a functional interface, so owner+name is unambiguous for it);
+         *  "" marks an overloaded (ambiguous) owner+name we must not guess at. */
+        private Map<String, String> samIndex;
+
+        private String sam(String owner, String name) {
+            if (samIndex == null) {
+                samIndex = new HashMap<>();
+                for (Map.Entry<String, String> e : r.methods.entrySet()) {
+                    String k = e.getKey();                 // "owner.name desc"
+                    int sp = k.indexOf(' ');
+                    if (sp < 0) continue;
+                    int dot = k.lastIndexOf('.', sp);
+                    if (dot < 0) continue;
+                    String on = k.substring(0, sp);        // "owner.name"
+                    String prev = samIndex.putIfAbsent(on, e.getValue());
+                    if (prev != null && !prev.equals(e.getValue())) samIndex.put(on, "");
+                }
+            }
+            String v = samIndex.get(owner + "." + name);
+            return (v == null || v.isEmpty()) ? null : v;
         }
     }
 

@@ -758,6 +758,66 @@ public class EndToEndTest {
     }
 
     /**
+     * Regression for the "AbstractMethodError" crash on a SAM/fun-interface: a
+     * lambda compiles to an invokedynamic whose NAME is the functional method
+     * name and whose return type is the interface. Renaming that SAM must also
+     * update the invokedynamic name, or the generated lambda implements the old
+     * name while the interface declares the new one -> AbstractMethodError.
+     *
+     * Uses the real javac so we get a genuine LambdaMetafactory call site.
+     */
+    @Test
+    void samLambdaRenameStaysConsistent(@org.junit.jupiter.api.io.TempDir Path tmp) throws Exception {
+        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
+        assertNotNull(jc, "test needs a JDK (javac) to build a real lambda");
+
+        Path src = tmp.resolve("src/sam/Lam.java");
+        Files.createDirectories(src.getParent());
+        Files.writeString(src,
+            "package sam;\n" +
+            "public class Lam {\n" +
+            "  public interface Fn { int apply(int x); }\n" +          // SAM 'apply'
+            "  static int use(Fn f, int v) { return f.apply(v); }\n" +
+            "  public static int run() {\n" +
+            "    Fn d = (x) -> x * 2;\n" +                              // lambda -> indy apply()LLam$Fn;
+            "    return use(d, 21);\n" +
+            "  }\n" +
+            "}\n");
+        Path classes = tmp.resolve("classes");
+        Files.createDirectories(classes);
+        assertEquals(0, jc.run(null, null, null, "-d", classes.toString(), src.toString()), "javac must succeed");
+
+        Path inJar = tmp.resolve("in.jar");
+        try (var os = Files.newOutputStream(inJar); JarOutputStream jos = new JarOutputStream(os, new Manifest())) {
+            try (var walk = Files.walk(classes)) {
+                for (Path p : (Iterable<Path>) walk.filter(x -> x.toString().endsWith(".class"))::iterator) {
+                    String entry = classes.relativize(p).toString().replace('\\', '/');
+                    jos.putNextEntry(new JarEntry(entry));
+                    jos.write(Files.readAllBytes(p));
+                    jos.closeEntry();
+                }
+            }
+        }
+
+        Path outJar = tmp.resolve("out.jar");
+        ObfConfig cfg = new ObfConfig();
+        cfg.rootPackages = java.util.List.of("sam");
+        cfg.excludeClasses = new java.util.ArrayList<>(java.util.List.of("sam/Lam")); // keep run() invokable
+        cfg.flattenPackages = false;
+        cfg.renameClasses = true; cfg.renameMethods = true; cfg.renameFields = true;
+        cfg.encryptStrings = false; cfg.obfuscateNumbers = false; cfg.obfuscateFlow = false;
+        cfg.injectJunk = false; cfg.stripMetadata = false;
+        cfg.seed = 202L;
+        CrazyObfuscator.run(inJar, outJar, cfg, new java.io.PrintStream(java.io.OutputStream.nullOutputStream()));
+
+        try (var cl = new java.net.URLClassLoader(new java.net.URL[]{outJar.toUri().toURL()},
+                                                  EndToEndTest.class.getClassLoader())) {
+            assertEquals(42, (int) (Integer) cl.loadClass("sam.Lam").getMethod("run").invoke(null),
+                "SAM lambda must still resolve after renaming the functional method");
+        }
+    }
+
+    /**
      * Regression for the "NoSuchMethodError: Sub.foo" crash: a call site may
      * reference an INHERITED member via a subclass owner (INVOKEVIRTUAL/STATIC
      * Sub.foo / GETFIELD Sub.field where the member is declared in Super and Sub

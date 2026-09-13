@@ -14,7 +14,7 @@ import java.util.concurrent.Callable;
 @Command(
     name = "crazy-obf",
     mixinStandardHelpOptions = true,
-    version = "Crazy Obfuscator 0.8.1",
+    version = "Crazy Obfuscator 0.8.2",
     description = "Java/Fabric .jar obfuscator (names, strings, numbers, flow, strip)."
 )
 public final class Main implements Callable<Integer> {

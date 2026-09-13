@@ -202,7 +202,14 @@ public final class ObfConfig {
      */
     public ObfConfig applyCrazyPreset() {
         renameClasses = renameMethods = renameFields = true;
-        flattenPackages = true;
+        // Keep the original package structure. Flattening every class into one
+        // package moves renamed package-private classes away from any excluded
+        // class that still references them (entry points, Mixins) → their
+        // cross-package access becomes an IllegalAccessError, and it also breaks
+        // Fabric/Mixin package-relative resolution. Renaming happens WITHIN each
+        // package instead. (Opt into flattenPackages explicitly only for a
+        // self-contained jar with no excluded cross-package access.)
+        flattenPackages = false;
 
         encryptStrings = true;
         stringEncryptionChance = 100;
